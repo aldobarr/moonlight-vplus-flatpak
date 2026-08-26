@@ -4,188 +4,352 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '上游仓库发行版本号 (如 v6.2.90)，留空则自动检测上游最新稳定版'
+        description: 'Published upstream release tag. Prereleases are allowed when selected manually; leave blank for the latest stable release.'
         required: false
         default: ''
+        type: string
   schedule:
-    - cron: '0 8 * * *'  # 每天 UTC 08:00 检查一次（北京时间 16:00）
+    - cron: '17 */4 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moonlight-flatpak-release
+  cancel-in-progress: false
+
+env:
+  APP_ID: com.github.qiin2333.Moonlight
+  GATEWAY_HEALTH_URL: https://moonlight.barreras.dev/healthz
+  MANIFEST: com.github.qiin2333.Moonlight.json
+  PRODUCTION_VERIFICATION_ASSET: production-verification.json
+  REPOSITORY_URL: https://moonlight.barreras.dev/repo/
+  RUNTIME_REPOSITORY: https://flathub.org/repo/flathub.flatpakrepo
+  UPSTREAM_RELEASE_ARTIFACT: resolved-upstream-release
 
 jobs:
   check-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get-version.outputs.version }}
-      commit: ${{ steps.get-version.outputs.commit }}
-      should_build: ${{ steps.check.outputs.should_build }}
+      should_build: ${{ steps.decision.outputs.should_build }}
     steps:
-      - name: Checkout
+      - name: Check out packaging sources
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      - name: Get upstream version
-        id: get-version
+      - name: Resolve eligible upstream release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_TAG: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-            echo "Manual input version: $VERSION"
-          else
-            echo "Auto-detecting latest upstream release..."
-            RELEASE=$(curl -sL "https://api.github.com/repos/qiin2333/moonlight-qt/releases/latest")
-            VERSION=$(echo "$RELEASE" | jq -r '.tag_name // empty')
-            if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-              echo "No release found, skipping build."
-              echo "version=" >> $GITHUB_OUTPUT
-              echo "commit=" >> $GITHUB_OUTPUT
-              exit 0
+          arguments=()
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            arguments+=(--tag "$REQUESTED_TAG")
+          fi
+          python3 scripts/resolve-upstream-release.py "${arguments[@]}" > upstream-release.json
+          cat upstream-release.json
+
+      - name: Decide whether this release needs a build
+        id: decision
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGING_COMMIT: ${{ github.sha }}
+        run: |
+          download_release_asset() {
+            local asset_json=$1
+            local destination=$2
+            local asset_state
+            local asset_url
+            local expected_digest
+            local actual_digest
+            asset_state=$(jq -er '.state' <<< "$asset_json") || return 1
+            asset_url=$(jq -er '.browser_download_url' <<< "$asset_json") || return 1
+            expected_digest=$(jq -er '.digest' <<< "$asset_json") || return 1
+            if [[ "$asset_state" != uploaded || ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              return 1
             fi
-          fi
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --retry 4 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              "$asset_url" \
+              --output "$destination" || return 1
+            actual_digest="sha256:$(sha256sum "$destination" | cut -d ' ' -f 1)"
+            [[ "$actual_digest" == "$expected_digest" ]]
+          }
 
-          # 通过 Git ref API 获取 tag 指向的真实 commit SHA
-          TAG_DATA=$(curl -sL "https://api.github.com/repos/qiin2333/moonlight-qt/git/ref/tags/${VERSION}")
-          SHA=$(echo "$TAG_DATA" | jq -r '.object.sha // empty')
-          TYPE=$(echo "$TAG_DATA" | jq -r '.object.type // empty')
-
-          if [ "$TYPE" = "tag" ]; then
-            # annotated tag：需要再请求一次 tag 对象获取真正的 commit SHA
-            COMMIT=$(curl -sL "https://api.github.com/repos/qiin2333/moonlight-qt/git/tags/${SHA}" | jq -r '.object.sha // empty')
-          elif [ "$TYPE" = "commit" ]; then
-            # lightweight tag：直接就是 commit SHA
-            COMMIT="$SHA"
+          current_arguments=()
+          latest_release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
+          http_status=$(curl \
+            --silent \
+            --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            --output latest-packaging-release.json \
+            --write-out '%{http_code}' \
+            "$latest_release_api")
+          if [[ "$http_status" == 200 ]]; then
+            latest_tag=$(jq -er '.tag_name' latest-packaging-release.json)
+            metadata_asset=$(jq -c \
+              '[.assets[] | select(.name == "build-metadata.json")] | if length == 1 then .[0] else empty end' \
+              latest-packaging-release.json)
+            verification_asset=$(jq -c \
+              --arg name "$PRODUCTION_VERIFICATION_ASSET" \
+              '[.assets[] | select(.name == $name)] | if length == 1 then .[0] else empty end' \
+              latest-packaging-release.json)
+            repository_index_digest=$(jq -r \
+              '[.assets[] | select(.name == "repository-assets.json")] |
+              if length == 1
+                and .[0].state == "uploaded"
+                and ((.[0].digest // "") | test("^sha256:[0-9a-f]{64}$"))
+              then .[0].digest
+              else empty
+              end' \
+              latest-packaging-release.json)
+            if [[ -n "$metadata_asset" && -n "$verification_asset" && -n "$repository_index_digest" ]] && \
+              download_release_asset "$metadata_asset" current-build-metadata.json && \
+              download_release_asset "$verification_asset" current-production-verification.json && \
+              python3 scripts/validate-production-verification.py \
+                current-build-metadata.json \
+                current-production-verification.json \
+                --release-tag "$latest_tag" \
+                --repository-url "$REPOSITORY_URL" \
+                --repository-index-digest "$repository_index_digest"; then
+              echo "Latest packaging release $latest_tag has valid production verification."
+              current_arguments+=(--current current-build-metadata.json)
+              printf 'current_release_tag=%s\n' "$latest_tag" >> "$GITHUB_OUTPUT"
+            else
+              echo "Latest release $latest_tag is not production-verified; forcing a recovery build."
+            fi
+          elif [[ "$http_status" == 404 ]]; then
+            echo "No published packaging release exists yet."
           else
-            echo "Error: Unknown tag object type: $TYPE"
+            message=$(jq -r '.message // "unknown GitHub API error"' latest-packaging-release.json)
+            echo "Unable to inspect the latest packaging release (HTTP $http_status): $message" >&2
             exit 1
           fi
+          decision=$(python3 scripts/should-build.py \
+            upstream-release.json \
+            "${current_arguments[@]}" \
+            --packaging-commit "$PACKAGING_COMMIT")
+          echo "$decision" | jq .
+          printf 'should_build=%s\n' "$(jq -r '.should_build' <<< "$decision")" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$COMMIT" ]; then
-            echo "Error: Cannot resolve commit for tag ${VERSION}"
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          echo "Upstream: $VERSION @ $COMMIT"
-      - name: Check if already built
-        id: check
+      - name: Reconcile verified release retention
+        if: steps.decision.outputs.should_build == 'false'
+        env:
+          CURRENT_RELEASE_TAG: ${{ steps.decision.outputs.current_release_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          if [ -z "$VERSION" ]; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          if git rev-parse "refs/tags/build-${VERSION}" >/dev/null 2>&1; then
-            echo "Version $VERSION already built, skipping."
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          else
-            echo "Version $VERSION not built yet, will build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          fi
+          bash scripts/reconcile-release-retention.sh \
+            "$CURRENT_RELEASE_TAG" \
+            "$PRODUCTION_VERIFICATION_ASSET"
 
-  build:
+      - name: Preserve resolved upstream release
+        if: steps.decision.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.UPSTREAM_RELEASE_ARTIFACT }}
+          path: upstream-release.json
+          if-no-files-found: error
+          retention-days: 1
+
+  build-and-publish:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     container:
       image: fedora:44
       options: --privileged
+    defaults:
+      run:
+        shell: bash
+    env:
+      FLATPAK_GPG_PRIVATE_KEY_B64: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY_B64 }}
     steps:
-      - name: Install dependencies
+      - name: Install build and publication tools
         run: |
-          dnf install -y git flatpak flatpak-builder jq curl
+          dnf install -y \
+            appstream \
+            coreutils \
+            curl \
+            desktop-file-utils \
+            diffutils \
+            findutils \
+            flatpak \
+            flatpak-builder \
+            gh \
+            git \
+            gnupg2 \
+            jq \
+            python3
 
-      - name: Checkout
+      - name: Check out packaging sources
         uses: actions/checkout@v6
 
-      - name: Setup Flathub
+      - name: Restore resolved upstream release
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.UPSTREAM_RELEASE_ARTIFACT }}
+          path: .
+
+      - name: Configure Flatpak build dependencies
         run: |
           flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --noninteractive -y flathub \
+            org.kde.Platform//6.10 \
+            org.kde.Sdk//6.10 \
+            org.flatpak.Builder//stable
 
-      - name: Install KDE SDK
+      - name: Import and verify repository signing key
         run: |
-          flatpak install -y flathub org.kde.Platform//6.10 org.kde.Sdk//6.10
+          bash scripts/import-signing-key.sh \
+            "$RUNNER_TEMP/flatpak-gnupg" \
+            keys/moonlight-flatpak.gpg
 
-      - name: Update manifest version
+      - name: Create resolved build manifest and metadata
         run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          COMMIT="${{ needs.check-version.outputs.commit }}"
-          echo "Building $VERSION @ $COMMIT"
-          jq --arg version "$VERSION" --arg commit "$COMMIT" \
-            '(.modules[] | select(.name == "moonlight").sources[0]) |= (.tag = $version | .commit = $commit)' \
-            com.github.qiin2333.Moonlight.json > manifest.json
-          mv manifest.json com.github.qiin2333.Moonlight.json
-          echo "Updated manifest:"
-          jq '.modules[] | select(.name == "moonlight").sources[0]' com.github.qiin2333.Moonlight.json
+          upstream_tag=$(jq -er '.tag' upstream-release.json)
+          upstream_version=$(jq -er '.version' upstream-release.json)
+          upstream_commit=$(jq -er '.commit' upstream-release.json)
+          upstream_release_date=$(jq -er '.release_date' upstream-release.json)
+          python3 scripts/update-manifest.py \
+            "$MANIFEST" \
+            generated-manifest.json \
+            --tag "$upstream_tag" \
+            --commit "$upstream_commit" \
+            --version "$upstream_version" \
+            --release-date "$upstream_release_date"
+          printf 'PACKAGING_RELEASE_TAG=build-%s-r%s-a%s\n' \
+            "$upstream_tag" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          printf 'BUNDLE_NAME=moonlight-qt-%s-x86_64.flatpak\n' "$upstream_tag" >> "$GITHUB_ENV"
+          printf 'UPSTREAM_VERSION=%s\n' "$upstream_version" >> "$GITHUB_ENV"
 
-      - name: Build Flatpak
+      - name: Lint resolved manifest
         run: |
-          flatpak-builder --repo=repo --force-clean build-dir com.github.qiin2333.Moonlight.json
+          flatpak run --command=flatpak-builder-lint \
+            org.flatpak.Builder \
+            --exceptions \
+            --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
+            manifest \
+            "$PWD/generated-manifest.json"
 
-      - name: Create bundle
+      - name: Build signed Flatpak repository
         run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          flatpak build-bundle repo "moonlight-qt-${VERSION}-x86_64.flatpak" com.github.qiin2333.Moonlight --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder \
+            --repo=repo \
+            --force-clean \
+            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+            --gpg-homedir="$GNUPGHOME" \
+            build-dir \
+            generated-manifest.json
+          flatpak build-update-repo \
+            --title='Moonlight V+ Flatpak Repository' \
+            --comment='Directly distributed Moonlight V+ Flatpak updates' \
+            --description='Signed Flatpak repository for Moonlight V+ releases packaged by aldobarr.' \
+            --homepage='https://github.com/aldobarr/moonlight-vplus-flatpak' \
+            --default-branch=master \
+            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+            --gpg-homedir="$GNUPGHOME" \
+            --prune \
+            repo
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: moonlight-qt-${{ needs.check-version.outputs.version }}
-          path: moonlight-qt-${{ needs.check-version.outputs.version }}-x86_64.flatpak
-
-      - name: Create Release
-        id: create-release
+      - name: Validate AppStream, desktop file, build, and repository
         run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          REPO="${{ github.repository }}"
-          TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          
-          # 尝试创建 release
-          RESPONSE=$(curl -sL -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPO}/releases" \
-            -d "{
-              \"tag_name\": \"build-${VERSION}\",
-              \"name\": \"Moonlight ${VERSION}\",
-              \"body\": \"Automated Flatpak build for ${VERSION}\\n\\nUpstream: https://github.com/qiin2333/moonlight-qt/releases/tag/${VERSION}\",
-              \"draft\": false,
-              \"prerelease\": false
-            }")
-          
-          echo "Create release response:"
-          echo "$RESPONSE" | jq .
-          
-          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-          UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url // empty')
-          
-          # 如果创建失败（release 已存在），获取已有 release
-          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Release may already exist, fetching existing release..."
-            RESPONSE=$(curl -sL \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${TOKEN}" \
-              "https://api.github.com/repos/${REPO}/releases/tags/build-${VERSION}")
-            RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-            UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url // empty')
+          flatpak build build-dir \
+            appstreamcli validate --strict --no-net \
+            "/app/share/metainfo/${APP_ID}.metainfo.xml"
+          desktop-file-validate \
+            "build-dir/files/share/applications/${APP_ID}.desktop"
+          flatpak run --command=flatpak-builder-lint \
+            org.flatpak.Builder \
+            --exceptions \
+            --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
+            builddir \
+            "$PWD/build-dir"
+          flatpak run --command=flatpak-builder-lint \
+            org.flatpak.Builder \
+            --exceptions \
+            --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
+            repo \
+            "$PWD/repo"
+          validation_root="$RUNNER_TEMP/signed-repository-validation"
+          XDG_DATA_HOME="$validation_root/data" \
+          XDG_CACHE_HOME="$validation_root/cache" \
+            flatpak --user remote-add \
+              --gpg-import=keys/moonlight-flatpak.gpg \
+              signed-local \
+              "file://$PWD/repo"
+          XDG_DATA_HOME="$validation_root/data" \
+          XDG_CACHE_HOME="$validation_root/cache" \
+            flatpak --user remote-ls signed-local |
+            grep --fixed-strings "$APP_ID"
+
+      - name: Create and inspect repository-backed bundle
+        run: |
+          flatpak build-bundle \
+            --repo-url="$REPOSITORY_URL" \
+            --runtime-repo="$RUNTIME_REPOSITORY" \
+            --gpg-keys=keys/moonlight-flatpak.gpg \
+            repo \
+            "$BUNDLE_NAME" \
+            "$APP_ID" \
+            master
+          bundle_validation_root="$RUNNER_TEMP/bundle-validation"
+          XDG_DATA_HOME="$bundle_validation_root/data" \
+          XDG_CACHE_HOME="$bundle_validation_root/cache" \
+            flatpak --user install --noninteractive -y "$BUNDLE_NAME"
+          info=$(
+            LC_ALL=C \
+            XDG_DATA_HOME="$bundle_validation_root/data" \
+            XDG_CACHE_HOME="$bundle_validation_root/cache" \
+              flatpak --user info "$APP_ID"
+          )
+          printf '%s\n' "$info"
+          installed_version=$(awk -F: '$1 ~ /^[[:space:]]*Version$/ { sub(/^[[:space:]]*/, "", $2); print $2 }' <<< "$info")
+          if [[ "$installed_version" != "$UPSTREAM_VERSION" ]]; then
+            echo "Bundle reports version $installed_version instead of $UPSTREAM_VERSION" >&2
+            exit 1
           fi
-          
-          echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
-          echo "upload_url=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          origin=$(
+            XDG_DATA_HOME="$bundle_validation_root/data" \
+            XDG_CACHE_HOME="$bundle_validation_root/cache" \
+              flatpak --user info --show-origin "$APP_ID"
+          )
+          remote_url=$(
+            XDG_DATA_HOME="$bundle_validation_root/data" \
+            XDG_CACHE_HOME="$bundle_validation_root/cache" \
+              flatpak --user remotes --columns=name,url |
+              awk -v origin="$origin" '$1 == origin { print $2 }'
+          )
+          if [[ "$remote_url" != "$REPOSITORY_URL" ]]; then
+            echo "Bundle origin is $remote_url instead of $REPOSITORY_URL" >&2
+            exit 1
+          fi
 
-      - name: Upload Release Asset
+      - name: Stage repository and release assets
         run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          FILE="moonlight-qt-${VERSION}-x86_64.flatpak"
-          UPLOAD_URL="${{ steps.create-release.outputs.upload_url }}"
-          
-          # 处理 upload_url 模板，移除 {?name,label}
-          URL="${UPLOAD_URL%\{*}"
-          
-          echo "Uploading ${FILE} to release..."
-          curl -L -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/octet-stream" \
-            "${URL}?name=${FILE}" \
-            --data-binary "@${FILE}"
+          python3 scripts/stage-repository-assets.py repo release-assets --reserved-assets 4
+          install -m 0644 "$BUNDLE_NAME" "release-assets/$BUNDLE_NAME"
+          python3 scripts/create-build-metadata.py \
+            upstream-release.json \
+            release-assets/repository-assets.json \
+            "release-assets/$BUNDLE_NAME" \
+            release-assets/build-metadata.json \
+            --repository-url "$REPOSITORY_URL" \
+            --packaging-commit "$GITHUB_SHA" \
+            --release-tag "$PACKAGING_RELEASE_TAG" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          jq . release-assets/build-metadata.json
+
+      - name: Publish, verify, and retain two releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/publish-release.sh release-assets upstream-release.json

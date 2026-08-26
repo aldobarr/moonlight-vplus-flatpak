@@ -1,0 +1,11 @@
+.secrets/
+__pycache__/
+*.py[cod]
+build-dir/
+generated-manifest.json
+release-assets/
+repo/
+upstream-release.json
+*.flatpak
+cloudflare-worker/.wrangler/
+cloudflare-worker/node_modules/
