@@ -22,7 +22,6 @@ env:
   APP_ID: com.github.qiin2333.Moonlight
   GATEWAY_HEALTH_URL: https://moonlight.barreras.dev/healthz
   MANIFEST: com.github.qiin2333.Moonlight.json
-  PRODUCTION_VERIFICATION_ASSET: production-verification.json
   REPOSITORY_URL: https://moonlight.barreras.dev/repo/
   RUNTIME_REPOSITORY: https://flathub.org/repo/flathub.flatpakrepo
   UPSTREAM_RELEASE_ARTIFACT: resolved-upstream-release
@@ -97,33 +96,12 @@ jobs:
             metadata_asset=$(jq -c \
               '[.assets[] | select(.name == "build-metadata.json")] | if length == 1 then .[0] else empty end' \
               latest-packaging-release.json)
-            verification_asset=$(jq -c \
-              --arg name "$PRODUCTION_VERIFICATION_ASSET" \
-              '[.assets[] | select(.name == $name)] | if length == 1 then .[0] else empty end' \
-              latest-packaging-release.json)
-            repository_index_digest=$(jq -r \
-              '[.assets[] | select(.name == "repository-assets.json")] |
-              if length == 1
-                and .[0].state == "uploaded"
-                and ((.[0].digest // "") | test("^sha256:[0-9a-f]{64}$"))
-              then .[0].digest
-              else empty
-              end' \
-              latest-packaging-release.json)
-            if [[ -n "$metadata_asset" && -n "$verification_asset" && -n "$repository_index_digest" ]] && \
-              download_release_asset "$metadata_asset" current-build-metadata.json && \
-              download_release_asset "$verification_asset" current-production-verification.json && \
-              python3 scripts/validate-production-verification.py \
-                current-build-metadata.json \
-                current-production-verification.json \
-                --release-tag "$latest_tag" \
-                --repository-url "$REPOSITORY_URL" \
-                --repository-index-digest "$repository_index_digest"; then
-              echo "Latest packaging release $latest_tag has valid production verification."
+            if [[ -n "$metadata_asset" ]] && \
+              download_release_asset "$metadata_asset" current-build-metadata.json; then
+              echo "Latest packaging release $latest_tag has valid build metadata."
               current_arguments+=(--current current-build-metadata.json)
-              printf 'current_release_tag=%s\n' "$latest_tag" >> "$GITHUB_OUTPUT"
             else
-              echo "Latest release $latest_tag is not production-verified; forcing a recovery build."
+              echo "Latest release $latest_tag has no usable build metadata; forcing a recovery build."
             fi
           elif [[ "$http_status" == 404 ]]; then
             echo "No published packaging release exists yet."
@@ -138,16 +116,6 @@ jobs:
             --packaging-commit "$PACKAGING_COMMIT")
           echo "$decision" | jq .
           printf 'should_build=%s\n' "$(jq -r '.should_build' <<< "$decision")" >> "$GITHUB_OUTPUT"
-
-      - name: Reconcile verified release retention
-        if: steps.decision.outputs.should_build == 'false'
-        env:
-          CURRENT_RELEASE_TAG: ${{ steps.decision.outputs.current_release_tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          bash scripts/reconcile-release-retention.sh \
-            "$CURRENT_RELEASE_TAG" \
-            "$PRODUCTION_VERIFICATION_ASSET"
 
       - name: Preserve resolved upstream release
         if: steps.decision.outputs.should_build == 'true'
@@ -333,11 +301,10 @@ jobs:
 
       - name: Stage repository and release assets
         run: |
-          python3 scripts/stage-repository-assets.py repo release-assets --reserved-assets 4
+          python3 scripts/stage-repository-assets.py repo release-assets --reserved-assets 2
           install -m 0644 "$BUNDLE_NAME" "release-assets/$BUNDLE_NAME"
           python3 scripts/create-build-metadata.py \
             upstream-release.json \
-            release-assets/repository-assets.json \
             "release-assets/$BUNDLE_NAME" \
             release-assets/build-metadata.json \
             --repository-url "$REPOSITORY_URL" \
@@ -348,7 +315,7 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT"
           jq . release-assets/build-metadata.json
 
-      - name: Publish, verify, and retain two releases
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

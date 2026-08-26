@@ -11,9 +11,6 @@
       "custom_domain": true
     }
   ],
-  "limits": {
-    "cpu_ms": 10
-  },
   "observability": {
     "enabled": false
   }
