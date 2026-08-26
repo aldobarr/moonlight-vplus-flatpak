@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "moonlight-flatpak-repository",
+  "name": "moonlight-vplus-flatpak",
   "main": "src/index.js",
   "compatibility_date": "2026-08-26",
   "workers_dev": false,
