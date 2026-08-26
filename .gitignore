@@ -2,8 +2,8 @@
 __pycache__/
 *.py[cod]
 build-dir/
+cloudflare-assets/
 release-assets/
-repo/
 upstream-release.json
 *.flatpak
 cloudflare-worker/.wrangler/

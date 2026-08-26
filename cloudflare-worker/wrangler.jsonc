@@ -3,6 +3,11 @@
   "name": "moonlight-vplus-flatpak",
   "main": "src/index.js",
   "compatibility_date": "2026-08-26",
+  "assets": {
+    "directory": "../cloudflare-assets",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
   "workers_dev": false,
   "preview_urls": false,
   "routes": [

@@ -1,34 +1,22 @@
-const REPOSITORY_PREFIX = "/repo/";
-const RELEASE_ASSET_BASE =
-  "https://github.com/aldobarr/moonlight-vplus-flatpak/releases/latest/download/";
-const SAFE_REPOSITORY_PATH = /^[A-Za-z0-9._+/-]+$/;
+const GITHUB_RELEASE_BASE =
+  "https://github.com/aldobarr/moonlight-vplus-flatpak/releases/download/";
+const DOWNLOAD_PATH =
+  /^\/download\/(build-(v?[0-9][-0-9A-Za-z._+]*)-r[1-9][0-9]*-a[1-9][0-9]*)\/(moonlight-qt-(v?[0-9][-0-9A-Za-z._+]*)-x86_64[.]flatpak)$/;
 
-export async function repositoryAssetName(relativePath) {
-  const bytes = new TextEncoder().encode(relativePath);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hexadecimal = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return `repo-${hexadecimal}`;
-}
-
-function repositoryPath(pathname) {
-  if (!pathname.startsWith(REPOSITORY_PREFIX)) {
+function releaseDownload(pathname) {
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
     return null;
   }
 
-  const relativePath = pathname.slice(REPOSITORY_PREFIX.length);
-  const segments = relativePath.split("/");
-  if (
-    relativePath.length === 0 ||
-    relativePath.includes("%") ||
-    relativePath.includes("\\") ||
-    !SAFE_REPOSITORY_PATH.test(relativePath) ||
-    segments.some((segment) => segment === "" || segment === "." || segment === "..")
-  ) {
+  const match = DOWNLOAD_PATH.exec(decodedPath);
+  if (match === null || match[2] !== match[4]) {
     return null;
   }
-  return relativePath;
+
+  return `${GITHUB_RELEASE_BASE}${encodeURIComponent(match[1])}/${encodeURIComponent(match[3])}`;
 }
 
 function plainText(body, status, headers = {}) {
@@ -48,17 +36,16 @@ export default {
       return plainText("Method Not Allowed\n", 405, { Allow: "GET, HEAD" });
     }
 
-    const relativePath = repositoryPath(new URL(request.url).pathname);
-    if (relativePath === null) {
+    const download = releaseDownload(new URL(request.url).pathname);
+    if (download === null) {
       return plainText(request.method === "HEAD" ? null : "Not Found\n", 404);
     }
 
-    const assetName = await repositoryAssetName(relativePath);
     return new Response(null, {
       status: 302,
       headers: {
-        Location: `${RELEASE_ASSET_BASE}${assetName}`,
-        "Cache-Control": "no-store",
+        Location: download,
+        "Cache-Control": "public, max-age=86400, immutable",
         "X-Content-Type-Options": "nosniff",
       },
     });

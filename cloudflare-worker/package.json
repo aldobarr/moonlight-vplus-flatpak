@@ -2,9 +2,6 @@
   "name": "moonlight-flatpak-repository-gateway",
   "private": true,
   "type": "module",
-  "scripts": {
-    "deploy": "wrangler deploy"
-  },
   "devDependencies": {
     "wrangler": "4.126.0"
   }

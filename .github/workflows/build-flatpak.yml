@@ -20,6 +20,9 @@ concurrency:
 
 env:
   APP_ID: com.github.qiin2333.Moonlight
+  CLOUDFLARE_ASSET_DIRECTORY: cloudflare-assets
+  DOWNLOAD_BASE_URL: https://moonlight.barreras.dev/download/
+  FLATPAK_REPOSITORY: cloudflare-assets/repo
   MANIFEST: com.github.qiin2333.Moonlight.json
   REPOSITORY_URL: https://moonlight.barreras.dev/repo/
   RUNTIME_REPOSITORY: https://flathub.org/repo/flathub.flatpakrepo
@@ -52,33 +55,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PACKAGING_COMMIT: ${{ github.sha }}
         run: |
-          download_release_asset() {
-            local asset_json=$1
-            local destination=$2
-            local asset_state
-            local asset_url
-            local expected_digest
-            local actual_digest
-            asset_state=$(jq -er '.state' <<< "$asset_json") || return 1
-            asset_url=$(jq -er '.browser_download_url' <<< "$asset_json") || return 1
-            expected_digest=$(jq -er '.digest' <<< "$asset_json") || return 1
-            if [[ "$asset_state" != uploaded || ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              return 1
-            fi
-            curl \
-              --fail \
-              --silent \
-              --show-error \
-              --location \
-              --retry 4 \
-              --retry-all-errors \
-              --retry-delay 2 \
-              "$asset_url" \
-              --output "$destination" || return 1
-            actual_digest="sha256:$(sha256sum "$destination" | cut -d ' ' -f 1)"
-            [[ "$actual_digest" == "$expected_digest" ]]
-          }
-
           current_arguments=()
           latest_release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
           http_status=$(curl \
@@ -92,16 +68,8 @@ jobs:
             "$latest_release_api")
           if [[ "$http_status" == 200 ]]; then
             latest_tag=$(jq -er '.tag_name' latest-packaging-release.json)
-            metadata_asset=$(jq -c \
-              '[.assets[] | select(.name == "build-metadata.json")] | if length == 1 then .[0] else empty end' \
-              latest-packaging-release.json)
-            if [[ -n "$metadata_asset" ]] && \
-              download_release_asset "$metadata_asset" current-build-metadata.json; then
-              echo "Latest packaging release $latest_tag has valid build metadata."
-              current_arguments+=(--current current-build-metadata.json)
-            else
-              echo "Latest release $latest_tag has no usable build metadata; forcing a recovery build."
-            fi
+            echo "Inspecting latest packaging release $latest_tag."
+            current_arguments+=(--current-release latest-packaging-release.json)
           elif [[ "$http_status" == 404 ]]; then
             echo "No published packaging release exists yet."
           else
@@ -112,7 +80,8 @@ jobs:
           decision=$(python3 scripts/should-build.py \
             upstream-release.json \
             "${current_arguments[@]}" \
-            --packaging-commit "$PACKAGING_COMMIT")
+            --packaging-commit "$PACKAGING_COMMIT" \
+            --repository-url "$REPOSITORY_URL")
           echo "$decision" | jq .
           printf 'should_build=%s\n' "$(jq -r '.should_build' <<< "$decision")" >> "$GITHUB_OUTPUT"
 
@@ -135,14 +104,11 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      FLATPAK_GPG_PRIVATE_KEY_B64: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY_B64 }}
     steps:
       - name: Install build and publication tools
         run: |
           dnf install -y \
             coreutils \
-            diffutils \
             findutils \
             flatpak \
             flatpak-builder \
@@ -151,6 +117,7 @@ jobs:
             gnupg2 \
             jq \
             nodejs \
+            npm \
             python3
 
       - name: Check out packaging sources
@@ -171,6 +138,8 @@ jobs:
             org.flatpak.Builder//stable
 
       - name: Import repository signing key
+        env:
+          FLATPAK_GPG_PRIVATE_KEY_B64: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY_B64 }}
         run: |
           bash scripts/import-signing-key.sh \
             "$RUNNER_TEMP/flatpak-gnupg" \
@@ -206,8 +175,9 @@ jobs:
 
       - name: Build signed Flatpak repository
         run: |
+          install -d "$CLOUDFLARE_ASSET_DIRECTORY"
           flatpak-builder \
-            --repo=repo \
+            --repo="$FLATPAK_REPOSITORY" \
             --force-clean \
             --gpg-sign="$FLATPAK_GPG_KEY_ID" \
             --gpg-homedir="$GNUPGHOME" \
@@ -222,7 +192,7 @@ jobs:
             --gpg-sign="$FLATPAK_GPG_KEY_ID" \
             --gpg-homedir="$GNUPGHOME" \
             --prune \
-            repo
+            "$FLATPAK_REPOSITORY"
 
       - name: Lint build and repository
         run: |
@@ -243,7 +213,7 @@ jobs:
             --exceptions \
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
             repo \
-            "$PWD/repo"
+            "$PWD/$FLATPAK_REPOSITORY"
 
       - name: Create repository-backed bundle
         run: |
@@ -251,25 +221,27 @@ jobs:
             --repo-url="$REPOSITORY_URL" \
             --runtime-repo="$RUNTIME_REPOSITORY" \
             --gpg-keys=keys/moonlight-flatpak.gpg \
-            repo \
+            "$FLATPAK_REPOSITORY" \
             "$BUNDLE_NAME" \
             "$APP_ID" \
             master
 
-      - name: Stage repository and release assets
+      - name: Stage release asset
         run: |
-          node scripts/stage-repository-assets.mjs repo release-assets --reserved-assets 2
+          install -d release-assets
           install -m 0644 "$BUNDLE_NAME" "release-assets/$BUNDLE_NAME"
-          python3 scripts/create-build-metadata.py \
-            upstream-release.json \
-            release-assets/build-metadata.json \
-            --repository-url "$REPOSITORY_URL" \
-            --packaging-commit "$GITHUB_SHA" \
-            --release-tag "$PACKAGING_RELEASE_TAG" \
-            --run-number "$GITHUB_RUN_NUMBER"
+
+      - name: Install Cloudflare deployment tool
+        run: npm ci --prefix cloudflare-worker --no-audit --no-fund
 
       - name: Publish release
         env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          bash scripts/publish-release.sh release-assets upstream-release.json
+          bash scripts/publish-release.sh \
+            release-assets \
+            upstream-release.json \
+            "$CLOUDFLARE_ASSET_DIRECTORY" \
+            cloudflare-worker
