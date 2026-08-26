@@ -34,13 +34,14 @@ cleanup() {
       "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
       --jq 'if .draft then .id else empty end' 2>/dev/null); then
       if [[ -n "$draft_release_id" ]]; then
-        if gh api \
-          --method DELETE \
-          "repos/$GITHUB_REPOSITORY/releases/$draft_release_id" \
+        if gh release delete "$release_tag" \
+          --repo "$GITHUB_REPOSITORY" \
+          --cleanup-tag \
+          --yes \
           >/dev/null; then
-          echo "Deleted incomplete draft release $release_tag." >&2
+          echo "Deleted incomplete draft release and tag $release_tag." >&2
         else
-          echo "Unable to delete incomplete draft release $release_tag." >&2
+          echo "Unable to delete incomplete draft release and tag $release_tag." >&2
         fi
       else
         echo "Preserving $release_tag because it is already published." >&2

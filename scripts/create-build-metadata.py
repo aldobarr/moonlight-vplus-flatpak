@@ -22,7 +22,7 @@ def create_metadata(
     *,
     repository_url: str,
     packaging_identity: PackagingIdentity,
-) -> dict:
+) -> None:
     if not repository_url.startswith("https://") or not repository_url.endswith("/"):
         raise ValueError("Repository URL must be an HTTPS base URL ending in a slash")
 
@@ -33,7 +33,6 @@ def create_metadata(
         "packaging": packaging_identity._asdict(),
     }
     output_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return metadata
 
 
 def parse_args() -> argparse.Namespace:

@@ -150,6 +150,7 @@ jobs:
             git \
             gnupg2 \
             jq \
+            nodejs \
             python3
 
       - name: Check out packaging sources
@@ -195,6 +196,7 @@ jobs:
       - name: Lint resolved manifest
         run: |
           flatpak run \
+            --cwd=/tmp \
             --filesystem="$GITHUB_WORKSPACE" \
             --command=flatpak-builder-lint \
             org.flatpak.Builder \
@@ -226,6 +228,7 @@ jobs:
       - name: Lint build and repository
         run: |
           flatpak run \
+            --cwd=/tmp \
             --filesystem="$GITHUB_WORKSPACE" \
             --command=flatpak-builder-lint \
             org.flatpak.Builder \
@@ -234,6 +237,7 @@ jobs:
             builddir \
             "$PWD/build-dir"
           flatpak run \
+            --cwd=/tmp \
             --filesystem="$GITHUB_WORKSPACE" \
             --command=flatpak-builder-lint \
             org.flatpak.Builder \
@@ -255,7 +259,7 @@ jobs:
 
       - name: Stage repository and release assets
         run: |
-          python3 scripts/stage-repository-assets.py repo release-assets --reserved-assets 2
+          node scripts/stage-repository-assets.mjs repo release-assets --reserved-assets 2
           install -m 0644 "$BUNDLE_NAME" "release-assets/$BUNDLE_NAME"
           python3 scripts/create-build-metadata.py \
             upstream-release.json \

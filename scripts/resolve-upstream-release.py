@@ -79,7 +79,6 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
     version = tag[1:] if tag.startswith("v") else tag
     commit = resolve_tag_commit(client, tag)
     return {
-        "release_id": release.get("id"),
         "tag": tag,
         "version": version,
         "commit": commit,

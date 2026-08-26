@@ -12,7 +12,7 @@ export async function repositoryAssetName(relativePath) {
   return `repo-${hexadecimal}`;
 }
 
-export function repositoryPath(pathname) {
+function repositoryPath(pathname) {
   if (!pathname.startsWith(REPOSITORY_PREFIX)) {
     return null;
   }
