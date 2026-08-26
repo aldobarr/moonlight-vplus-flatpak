@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 build-dir/
-generated-manifest.json
 release-assets/
 repo/
 upstream-release.json

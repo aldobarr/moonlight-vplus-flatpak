@@ -184,7 +184,7 @@ jobs:
           upstream_release_date=$(jq -er '.release_date' upstream-release.json)
           python3 scripts/update-manifest.py \
             "$MANIFEST" \
-            generated-manifest.json \
+            "$MANIFEST" \
             --tag "$upstream_tag" \
             --commit "$upstream_commit" \
             --version "$upstream_version" \
@@ -203,7 +203,7 @@ jobs:
             --exceptions \
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
             manifest \
-            "$PWD/generated-manifest.json"
+            "$PWD/$MANIFEST"
 
       - name: Build signed Flatpak repository
         run: |
@@ -213,7 +213,7 @@ jobs:
             --gpg-sign="$FLATPAK_GPG_KEY_ID" \
             --gpg-homedir="$GNUPGHOME" \
             build-dir \
-            generated-manifest.json
+            "$MANIFEST"
           flatpak build-update-repo \
             --title='Moonlight V+ Flatpak Repository' \
             --comment='Directly distributed Moonlight V+ Flatpak updates' \
