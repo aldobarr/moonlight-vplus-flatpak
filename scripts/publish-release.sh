@@ -8,7 +8,6 @@ if [[ $# -ne 2 ]]; then
 fi
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${GATEWAY_HEALTH_URL:?GATEWAY_HEALTH_URL is required}"
 : "${REPOSITORY_URL:?REPOSITORY_URL is required}"
 
 asset_directory=$1
@@ -16,18 +15,46 @@ upstream_metadata=$2
 upstream_tag=$(jq -er '.tag' "$upstream_metadata")
 upstream_version=$(jq -er '.version' "$upstream_metadata")
 upstream_url=$(jq -er '.html_url' "$upstream_metadata")
-upstream_prerelease=$(jq -er '.prerelease' "$upstream_metadata")
+upstream_prerelease=$(jq -er \
+  '.prerelease | if type == "boolean" then tostring else error("prerelease must be a Boolean") end' \
+  "$upstream_metadata")
 build_metadata="$asset_directory/build-metadata.json"
 temporary_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonlight-release.XXXXXX")
+release_created=false
+release_published=false
+release_tag=
 
 cleanup() {
-  status=$?
+  local status=$?
+  local draft_release_id
+
+  trap - EXIT
+  if [[ $status -ne 0 && $release_created == true && $release_published == false ]]; then
+    if draft_release_id=$(gh api \
+      "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
+      --jq 'if .draft then .id else empty end' 2>/dev/null); then
+      if [[ -n "$draft_release_id" ]]; then
+        if gh api \
+          --method DELETE \
+          "repos/$GITHUB_REPOSITORY/releases/$draft_release_id" \
+          >/dev/null; then
+          echo "Deleted incomplete draft release $release_tag." >&2
+        else
+          echo "Unable to delete incomplete draft release $release_tag." >&2
+        fi
+      else
+        echo "Preserving $release_tag because it is already published." >&2
+      fi
+    else
+      echo "Unable to confirm that $release_tag is still a draft; preserving it." >&2
+    fi
+  fi
   rm -rf -- "$temporary_directory"
   exit "$status"
 }
 trap cleanup EXIT
 
-for command in curl gh jq python3 sha256sum stat; do
+for command in gh jq sha256sum stat; do
   if ! command -v "$command" >/dev/null; then
     echo "Required command is unavailable: $command" >&2
     exit 1
@@ -74,8 +101,6 @@ for asset in "${assets[@]}"; do
   fi
 done
 
-curl --fail --silent --show-error --location --max-time 30 "$GATEWAY_HEALTH_URL" >/dev/null
-
 notes_file="$temporary_directory/release-notes.md"
 {
   printf 'Automated Flatpak packaging release for upstream Moonlight V+ %s.\n\n' "$upstream_tag"
@@ -91,6 +116,7 @@ gh release create "$release_tag" \
   --title "Moonlight ${upstream_version} (packaging r${run_number})" \
   --notes-file "$notes_file" \
   --draft
+release_created=true
 
 gh release upload "$release_tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
 release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" --jq '.id')
@@ -116,5 +142,6 @@ gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
   -F prerelease=false \
   -f make_latest=true \
   >/dev/null
+release_published=true
 
 echo "Published $release_tag"

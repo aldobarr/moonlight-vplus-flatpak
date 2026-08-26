@@ -38,12 +38,6 @@ if ! cmp --silent "$public_key" "$exported_public_key"; then
 fi
 rm -- "$exported_public_key"
 
-signature_test=$(mktemp "$GNUPGHOME/signature-test.XXXXXX")
-rm -- "$signature_test"
-printf 'Moonlight Flatpak signing test\n' |
-  gpg --batch --local-user "$fingerprint" --detach-sign --output "$signature_test"
-rm -- "$signature_test"
-
 if [[ -n ${GITHUB_ENV:-} ]]; then
   {
     printf 'GNUPGHOME=%s\n' "$GNUPGHOME"

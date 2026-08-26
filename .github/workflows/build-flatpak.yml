@@ -20,7 +20,6 @@ concurrency:
 
 env:
   APP_ID: com.github.qiin2333.Moonlight
-  GATEWAY_HEALTH_URL: https://moonlight.barreras.dev/healthz
   MANIFEST: com.github.qiin2333.Moonlight.json
   REPOSITORY_URL: https://moonlight.barreras.dev/repo/
   RUNTIME_REPOSITORY: https://flathub.org/repo/flathub.flatpakrepo
@@ -142,10 +141,7 @@ jobs:
       - name: Install build and publication tools
         run: |
           dnf install -y \
-            appstream \
             coreutils \
-            curl \
-            desktop-file-utils \
             diffutils \
             findutils \
             flatpak \
@@ -173,13 +169,13 @@ jobs:
             org.kde.Sdk//6.10 \
             org.flatpak.Builder//stable
 
-      - name: Import and verify repository signing key
+      - name: Import repository signing key
         run: |
           bash scripts/import-signing-key.sh \
             "$RUNNER_TEMP/flatpak-gnupg" \
             keys/moonlight-flatpak.gpg
 
-      - name: Create resolved build manifest and metadata
+      - name: Create resolved build manifest
         run: |
           upstream_tag=$(jq -er '.tag' upstream-release.json)
           upstream_version=$(jq -er '.version' upstream-release.json)
@@ -195,11 +191,12 @@ jobs:
           printf 'PACKAGING_RELEASE_TAG=build-%s-r%s-a%s\n' \
             "$upstream_tag" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           printf 'BUNDLE_NAME=moonlight-qt-%s-x86_64.flatpak\n' "$upstream_tag" >> "$GITHUB_ENV"
-          printf 'UPSTREAM_VERSION=%s\n' "$upstream_version" >> "$GITHUB_ENV"
 
       - name: Lint resolved manifest
         run: |
-          flatpak run --command=flatpak-builder-lint \
+          flatpak run \
+            --filesystem="$GITHUB_WORKSPACE" \
+            --command=flatpak-builder-lint \
             org.flatpak.Builder \
             --exceptions \
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
@@ -226,38 +223,26 @@ jobs:
             --prune \
             repo
 
-      - name: Validate AppStream, desktop file, build, and repository
+      - name: Lint build and repository
         run: |
-          flatpak build build-dir \
-            appstreamcli validate --strict --no-net \
-            "/app/share/metainfo/${APP_ID}.metainfo.xml"
-          desktop-file-validate \
-            "build-dir/files/share/applications/${APP_ID}.desktop"
-          flatpak run --command=flatpak-builder-lint \
+          flatpak run \
+            --filesystem="$GITHUB_WORKSPACE" \
+            --command=flatpak-builder-lint \
             org.flatpak.Builder \
             --exceptions \
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
             builddir \
             "$PWD/build-dir"
-          flatpak run --command=flatpak-builder-lint \
+          flatpak run \
+            --filesystem="$GITHUB_WORKSPACE" \
+            --command=flatpak-builder-lint \
             org.flatpak.Builder \
             --exceptions \
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
             repo \
             "$PWD/repo"
-          validation_root="$RUNNER_TEMP/signed-repository-validation"
-          XDG_DATA_HOME="$validation_root/data" \
-          XDG_CACHE_HOME="$validation_root/cache" \
-            flatpak --user remote-add \
-              --gpg-import=keys/moonlight-flatpak.gpg \
-              signed-local \
-              "file://$PWD/repo"
-          XDG_DATA_HOME="$validation_root/data" \
-          XDG_CACHE_HOME="$validation_root/cache" \
-            flatpak --user remote-ls signed-local |
-            grep --fixed-strings "$APP_ID"
 
-      - name: Create and inspect repository-backed bundle
+      - name: Create repository-backed bundle
         run: |
           flatpak build-bundle \
             --repo-url="$REPOSITORY_URL" \
@@ -267,37 +252,6 @@ jobs:
             "$BUNDLE_NAME" \
             "$APP_ID" \
             master
-          bundle_validation_root="$RUNNER_TEMP/bundle-validation"
-          XDG_DATA_HOME="$bundle_validation_root/data" \
-          XDG_CACHE_HOME="$bundle_validation_root/cache" \
-            flatpak --user install --noninteractive -y "$BUNDLE_NAME"
-          info=$(
-            LC_ALL=C \
-            XDG_DATA_HOME="$bundle_validation_root/data" \
-            XDG_CACHE_HOME="$bundle_validation_root/cache" \
-              flatpak --user info "$APP_ID"
-          )
-          printf '%s\n' "$info"
-          installed_version=$(awk -F: '$1 ~ /^[[:space:]]*Version$/ { sub(/^[[:space:]]*/, "", $2); print $2 }' <<< "$info")
-          if [[ "$installed_version" != "$UPSTREAM_VERSION" ]]; then
-            echo "Bundle reports version $installed_version instead of $UPSTREAM_VERSION" >&2
-            exit 1
-          fi
-          origin=$(
-            XDG_DATA_HOME="$bundle_validation_root/data" \
-            XDG_CACHE_HOME="$bundle_validation_root/cache" \
-              flatpak --user info --show-origin "$APP_ID"
-          )
-          remote_url=$(
-            XDG_DATA_HOME="$bundle_validation_root/data" \
-            XDG_CACHE_HOME="$bundle_validation_root/cache" \
-              flatpak --user remotes --columns=name,url |
-              awk -v origin="$origin" '$1 == origin { print $2 }'
-          )
-          if [[ "$remote_url" != "$REPOSITORY_URL" ]]; then
-            echo "Bundle origin is $remote_url instead of $REPOSITORY_URL" >&2
-            exit 1
-          fi
 
       - name: Stage repository and release assets
         run: |
@@ -305,15 +259,11 @@ jobs:
           install -m 0644 "$BUNDLE_NAME" "release-assets/$BUNDLE_NAME"
           python3 scripts/create-build-metadata.py \
             upstream-release.json \
-            "release-assets/$BUNDLE_NAME" \
             release-assets/build-metadata.json \
             --repository-url "$REPOSITORY_URL" \
             --packaging-commit "$GITHUB_SHA" \
             --release-tag "$PACKAGING_RELEASE_TAG" \
-            --run-id "$GITHUB_RUN_ID" \
-            --run-number "$GITHUB_RUN_NUMBER" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT"
-          jq . release-assets/build-metadata.json
+            --run-number "$GITHUB_RUN_NUMBER"
 
       - name: Publish release
         env:

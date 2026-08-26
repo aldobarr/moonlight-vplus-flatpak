@@ -48,14 +48,7 @@ export default {
       return plainText("Method Not Allowed\n", 405, { Allow: "GET, HEAD" });
     }
 
-    const url = new URL(request.url);
-    if (url.pathname === "/healthz") {
-      return plainText(request.method === "HEAD" ? null : "ok\n", 200, {
-        "Cache-Control": "no-store",
-      });
-    }
-
-    const relativePath = repositoryPath(url.pathname);
+    const relativePath = repositoryPath(new URL(request.url).pathname);
     if (relativePath === null) {
       return plainText(request.method === "HEAD" ? null : "Not Found\n", 404);
     }
