@@ -10,14 +10,13 @@ from pathlib import Path
 
 
 def update_manifest(
-    source_path: Path,
-    output_path: Path,
+    manifest_path: Path,
     tag: str,
     commit: str,
     version: str,
     release_date: str,
 ) -> None:
-    manifest = json.loads(source_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     moonlight_modules = [
         module for module in manifest.get("modules", []) if module.get("name") == "moonlight"
     ]
@@ -41,13 +40,12 @@ def update_manifest(
     environment["MOONLIGHT_FLATPAK_VERSION"] = version
     environment["MOONLIGHT_FLATPAK_RELEASE_DATE"] = release_date
 
-    output_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("output", type=Path)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--version", required=True)
@@ -59,7 +57,6 @@ def main() -> None:
     args = parse_args()
     update_manifest(
         args.manifest,
-        args.output,
         args.tag,
         args.commit,
         args.version,

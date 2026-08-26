@@ -79,12 +79,13 @@ async function stageRepository(repository, output, reservedAssets) {
 
 async function main() {
   const cliArguments = process.argv.slice(2);
-  const [repositoryArgument, outputArgument, option, reservedAssetsArgument] = cliArguments;
+  const [repositoryArgument, outputArgument, reservedAssetsOption, reservedAssetsArgument] =
+    cliArguments;
   if (
     cliArguments.length !== 4 ||
     !repositoryArgument ||
     !outputArgument ||
-    option !== "--reserved-assets" ||
+    reservedAssetsOption !== "--reserved-assets" ||
     !reservedAssetsArgument
   ) {
     throw new Error(

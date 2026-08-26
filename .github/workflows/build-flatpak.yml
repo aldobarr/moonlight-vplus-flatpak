@@ -184,7 +184,6 @@ jobs:
           upstream_release_date=$(jq -er '.release_date' upstream-release.json)
           python3 scripts/update-manifest.py \
             "$MANIFEST" \
-            "$MANIFEST" \
             --tag "$upstream_tag" \
             --commit "$upstream_commit" \
             --version "$upstream_version" \
