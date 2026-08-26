@@ -1,6 +1,8 @@
 {
   "com.github.qiin2333.Moonlight": [
     "appid-uses-code-hosting-domain",
+    "appstream-external-screenshot-url",
+    "appstream-screenshots-not-mirrored-in-ostree",
     "finish-args-host-os-ro-filesystem-access"
   ]
 }
