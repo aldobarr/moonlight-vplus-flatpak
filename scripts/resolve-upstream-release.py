@@ -14,10 +14,11 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
+from release_protocol import validate_upstream_tag
+
 
 API_ROOT = "https://api.github.com"
 UPSTREAM_REPOSITORY = "qiin2333/moonlight-qt"
-TAG_PATTERN = re.compile(r"^v?[0-9][0-9A-Za-z._+-]*$")
 
 
 class GitHubClient:
@@ -43,14 +44,9 @@ class GitHubClient:
             raise RuntimeError(f"GitHub API request failed ({error.code}): {detail}") from error
 
 
-def validate_tag(tag: str) -> None:
-    if not TAG_PATTERN.fullmatch(tag):
-        raise ValueError(f"Unsupported upstream release tag: {tag!r}")
-
-
 def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str, Any]:
     if requested_tag:
-        validate_tag(requested_tag)
+        validate_upstream_tag(requested_tag)
         encoded_tag = urllib.parse.quote(requested_tag, safe="")
         release = client.get_json(
             f"/repos/{UPSTREAM_REPOSITORY}/releases/tags/{encoded_tag}"
@@ -63,7 +59,7 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
     tag = release.get("tag_name")
     if not isinstance(tag, str):
         raise ValueError("Upstream Release does not contain a tag name")
-    validate_tag(tag)
+    validate_upstream_tag(tag)
     if requested_tag and tag != requested_tag:
         raise ValueError(f"Requested tag {requested_tag!r} resolved as {tag!r}")
     if release.get("draft"):

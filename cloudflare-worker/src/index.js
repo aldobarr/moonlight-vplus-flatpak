@@ -1,7 +1,7 @@
 const GITHUB_RELEASE_BASE =
   "https://github.com/aldobarr/moonlight-vplus-flatpak/releases/download/";
 const DOWNLOAD_PATH =
-  /^\/download\/(build-(v?[0-9][-0-9A-Za-z._+]*)-r[1-9][0-9]*-a[1-9][0-9]*)\/(moonlight-qt-(v?[0-9][-0-9A-Za-z._+]*)-x86_64[.]flatpak)$/;
+  /^\/download\/([0-9A-Za-z][0-9A-Za-z._+-]*)\/([0-9A-Za-z][0-9A-Za-z._+-]*)$/;
 
 function releaseDownload(pathname) {
   let decodedPath;
@@ -12,11 +12,11 @@ function releaseDownload(pathname) {
   }
 
   const match = DOWNLOAD_PATH.exec(decodedPath);
-  if (match === null || match[2] !== match[4]) {
+  if (match === null) {
     return null;
   }
 
-  return `${GITHUB_RELEASE_BASE}${encodeURIComponent(match[1])}/${encodeURIComponent(match[3])}`;
+  return `${GITHUB_RELEASE_BASE}${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}`;
 }
 
 function plainText(body, status, headers = {}) {

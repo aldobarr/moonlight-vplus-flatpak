@@ -38,12 +38,4 @@ if ! cmp --silent "$public_key" "$exported_public_key"; then
 fi
 rm -- "$exported_public_key"
 
-if [[ -n ${GITHUB_ENV:-} ]]; then
-  {
-    printf 'GNUPGHOME=%s\n' "$GNUPGHOME"
-    printf 'FLATPAK_GPG_KEY_ID=%s\n' "$fingerprint"
-  } >>"$GITHUB_ENV"
-else
-  printf 'GNUPGHOME=%s\n' "$GNUPGHOME"
-  printf 'FLATPAK_GPG_KEY_ID=%s\n' "$fingerprint"
-fi
+printf '%s\n' "$fingerprint"

@@ -13,13 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from release_protocol import UPSTREAM_TAG_PATTERN, bundle_name
+
 
 METADATA_MARKER = re.compile(
     r"^<!-- moonlight-flatpak-build-v1:([A-Za-z0-9+/]+={0,2}) -->$",
     re.MULTILINE,
 )
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-TAG_PATTERN = re.compile(r"^v?[0-9][0-9A-Za-z._+-]*$")
 
 
 def timestamp(value: Any) -> datetime:
@@ -103,7 +104,7 @@ def release_metadata(release: dict | None) -> dict | None:
     packaging_release_tag = packaging.get("release_tag")
     if (
         not isinstance(upstream_tag, str)
-        or TAG_PATTERN.fullmatch(upstream_tag) is None
+        or UPSTREAM_TAG_PATTERN.fullmatch(upstream_tag) is None
         or not isinstance(upstream_commit, str)
         or SHA_PATTERN.fullmatch(upstream_commit) is None
         or not isinstance(upstream_prerelease, bool)
@@ -118,7 +119,7 @@ def release_metadata(release: dict | None) -> dict | None:
     except ValueError:
         return None
 
-    expected_bundle = f"moonlight-qt-{upstream_tag}-x86_64.flatpak"
+    expected_bundle = bundle_name(upstream_tag)
     assets = release.get("assets")
     if not isinstance(assets, list) or len(assets) != 1:
         return None

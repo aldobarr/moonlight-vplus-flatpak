@@ -31,7 +31,12 @@ upstream_prerelease=$(jq -er \
   '.prerelease | if type == "boolean" then tostring else error("prerelease must be a Boolean") end' \
   "$upstream_metadata")
 release_tag=$PACKAGING_RELEASE_TAG
-expected_release_tag="build-${upstream_tag}-r${GITHUB_RUN_NUMBER}-a${GITHUB_RUN_ATTEMPT}"
+expected_names=$(python3 scripts/release_protocol.py \
+  "$upstream_tag" \
+  --run-number "$GITHUB_RUN_NUMBER" \
+  --run-attempt "$GITHUB_RUN_ATTEMPT")
+expected_release_tag=$(jq -er '.release_tag' <<<"$expected_names")
+expected_bundle_name=$(jq -er '.bundle_name' <<<"$expected_names")
 bundle="$asset_directory/$BUNDLE_NAME"
 download_url="${DOWNLOAD_BASE_URL}${release_tag}/${BUNDLE_NAME}"
 temporary_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonlight-release.XXXXXX")
@@ -129,7 +134,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in base64 find gh jq realpath sha256sum stat; do
+for command in base64 find gh jq python3 realpath sha256sum stat; do
   if ! command -v "$command" >/dev/null; then
     echo "Required command is unavailable: $command" >&2
     exit 1
@@ -155,7 +160,7 @@ if [[ "$REPOSITORY_URL" != https://*/ || "$DOWNLOAD_BASE_URL" != https://*/ ]]; 
   echo "Repository and download base URLs must be HTTPS URLs ending in a slash." >&2
   exit 1
 fi
-if [[ "$BUNDLE_NAME" != "moonlight-qt-${upstream_tag}-x86_64.flatpak" ]]; then
+if [[ "$BUNDLE_NAME" != "$expected_bundle_name" ]]; then
   echo "Bundle name does not match upstream tag $upstream_tag." >&2
   exit 1
 fi
@@ -285,6 +290,7 @@ wrangler_output="$temporary_directory/wrangler-output.ndjson"
 WRANGLER_OUTPUT_FILE_PATH="$wrangler_output" \
   "$wrangler" versions upload \
     --config "$worker_config" \
+    --tag "$release_tag" \
     --message "Flatpak repository for $release_tag"
 new_worker_version=$(jq -er \
   'select(.type == "version-upload" and .version == 1) | .version_id' \
@@ -321,6 +327,17 @@ else
   if [[ $cloudflare_deployed == false ]]; then
     exit 1
   fi
+fi
+
+if ! worker_version_before_publication=$(active_worker_version \
+  "$temporary_directory/pre-publication-deployment.json"); then
+  cloudflare_state_uncertain=true
+  echo "Unable to confirm the active Worker version before publishing the release." >&2
+  exit 1
+fi
+if [[ "$worker_version_before_publication" != "$new_worker_version" ]]; then
+  echo "Worker version $new_worker_version lost deployment ownership before publication." >&2
+  exit 1
 fi
 
 gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \

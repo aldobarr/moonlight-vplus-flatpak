@@ -137,14 +137,6 @@ jobs:
             org.kde.Sdk//6.10 \
             org.flatpak.Builder//stable
 
-      - name: Import repository signing key
-        env:
-          FLATPAK_GPG_PRIVATE_KEY_B64: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY_B64 }}
-        run: |
-          bash scripts/import-signing-key.sh \
-            "$RUNNER_TEMP/flatpak-gnupg" \
-            keys/moonlight-flatpak.gpg
-
       - name: Create resolved build manifest
         run: |
           upstream_tag=$(jq -er '.tag' upstream-release.json)
@@ -157,9 +149,14 @@ jobs:
             --commit "$upstream_commit" \
             --version "$upstream_version" \
             --release-date "$upstream_release_date"
-          printf 'PACKAGING_RELEASE_TAG=build-%s-r%s-a%s\n' \
-            "$upstream_tag" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-          printf 'BUNDLE_NAME=moonlight-qt-%s-x86_64.flatpak\n' "$upstream_tag" >> "$GITHUB_ENV"
+          release_names=$(python3 scripts/release_protocol.py \
+            "$upstream_tag" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT")
+          {
+            printf 'PACKAGING_RELEASE_TAG=%s\n' "$(jq -er '.release_tag' <<< "$release_names")"
+            printf 'BUNDLE_NAME=%s\n' "$(jq -er '.bundle_name' <<< "$release_names")"
+          } >> "$GITHUB_ENV"
 
       - name: Lint resolved manifest
         run: |
@@ -173,28 +170,14 @@ jobs:
             manifest \
             "$PWD/$MANIFEST"
 
-      - name: Build signed Flatpak repository
+      - name: Build Flatpak
         run: |
-          install -d "$CLOUDFLARE_ASSET_DIRECTORY"
           flatpak-builder \
-            --repo="$FLATPAK_REPOSITORY" \
             --force-clean \
-            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
-            --gpg-homedir="$GNUPGHOME" \
             build-dir \
             "$MANIFEST"
-          flatpak build-update-repo \
-            --title='Moonlight V+ Flatpak Repository' \
-            --comment='Directly distributed Moonlight V+ Flatpak updates' \
-            --description='Signed Flatpak repository for Moonlight V+ releases packaged by aldobarr.' \
-            --homepage='https://github.com/aldobarr/moonlight-vplus-flatpak' \
-            --default-branch=master \
-            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
-            --gpg-homedir="$GNUPGHOME" \
-            --prune \
-            "$FLATPAK_REPOSITORY"
 
-      - name: Lint build and repository
+      - name: Lint build directory
         run: |
           flatpak run \
             --cwd=/tmp \
@@ -205,6 +188,42 @@ jobs:
             --user-exceptions "$PWD/flatpak-builder-lint-exceptions.json" \
             builddir \
             "$PWD/build-dir"
+
+      - name: Export signed Flatpak repository
+        env:
+          FLATPAK_GPG_PRIVATE_KEY_B64: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY_B64 }}
+        run: |
+          signing_home=$(mktemp -d "$RUNNER_TEMP/flatpak-gnupg.XXXXXX")
+          cleanup_signing_home() {
+            gpgconf --homedir "$signing_home" --kill gpg-agent >/dev/null 2>&1 || true
+            rm -rf -- "$signing_home"
+          }
+          trap cleanup_signing_home EXIT
+          signing_key_id=$(bash scripts/import-signing-key.sh \
+            "$signing_home" \
+            keys/moonlight-flatpak.gpg)
+          unset FLATPAK_GPG_PRIVATE_KEY_B64
+          install -d "$CLOUDFLARE_ASSET_DIRECTORY"
+          flatpak-builder \
+            --export-only \
+            --repo="$FLATPAK_REPOSITORY" \
+            --gpg-sign="$signing_key_id" \
+            --gpg-homedir="$signing_home" \
+            build-dir \
+            "$MANIFEST"
+          flatpak build-update-repo \
+            --title='Moonlight V+ Flatpak Repository' \
+            --comment='Directly distributed Moonlight V+ Flatpak updates' \
+            --description='Signed Flatpak repository for Moonlight V+ releases packaged by aldobarr.' \
+            --homepage='https://github.com/aldobarr/moonlight-vplus-flatpak' \
+            --default-branch=master \
+            --gpg-sign="$signing_key_id" \
+            --gpg-homedir="$signing_home" \
+            --prune \
+            "$FLATPAK_REPOSITORY"
+
+      - name: Lint repository
+        run: |
           flatpak run \
             --cwd=/tmp \
             --filesystem="$GITHUB_WORKSPACE" \
