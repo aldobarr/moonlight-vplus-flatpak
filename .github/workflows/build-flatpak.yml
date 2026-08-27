@@ -31,10 +31,19 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
     outputs:
       should_build: ${{ steps.decision.outputs.should_build }}
     steps:
+      - name: Keep scheduled workflow enabled
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/build-flatpak.yml/enable"
+
       - name: Check out packaging sources
         uses: actions/checkout@v6
         with:
