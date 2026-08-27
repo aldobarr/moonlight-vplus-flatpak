@@ -262,7 +262,7 @@ notes_file="$temporary_directory/release-notes.md"
 gh release create "$release_tag" \
   --repo "$GITHUB_REPOSITORY" \
   --target "$GITHUB_SHA" \
-  --title "Moonlight ${upstream_version} (packaging r${GITHUB_RUN_NUMBER})" \
+  --title "v${upstream_version}" \
   --notes-file "$notes_file" \
   --draft
 release_created=true
