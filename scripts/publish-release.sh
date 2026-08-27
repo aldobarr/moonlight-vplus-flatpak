@@ -30,6 +30,11 @@ upstream_url=$(jq -er '.html_url' "$upstream_metadata")
 upstream_prerelease=$(jq -er \
   '.prerelease | if type == "boolean" then tostring else error("prerelease must be a Boolean") end' \
   "$upstream_metadata")
+if [[ "$upstream_prerelease" == true ]]; then
+  make_latest=false
+else
+  make_latest=true
+fi
 release_tag=$PACKAGING_RELEASE_TAG
 expected_names=$(python3 scripts/release_protocol.py \
   "$upstream_tag" \
@@ -42,24 +47,172 @@ download_url="${DOWNLOAD_BASE_URL}${release_tag}/${BUNDLE_NAME}"
 temporary_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonlight-release.XXXXXX")
 release_created=false
 release_published=false
-cloudflare_deployed=false
+publication_owns_production=false
 cloudflare_state_uncertain=false
-previous_worker_version=
+previous_deployment_id=
+new_deployment_id=
 new_worker_version=
+rollback_deployment_file="$temporary_directory/rollback-deployment.json"
 
-active_worker_version() {
+validate_worker_deployment() {
+  local input_file=$1
+  local output_file=$2
+
+  jq -er '
+    def uuid:
+      type == "string"
+      and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    if (
+      (.id | uuid)
+      and (.versions | type == "array" and length > 0 and length <= 2)
+      and all(
+        .versions[];
+        (.version_id | uuid)
+        and (.percentage | type == "number" and . > 0 and . <= 100)
+      )
+      and ([.versions[].version_id] | length == (unique | length))
+      and ([.versions[].percentage] | add == 100)
+    ) then .
+    else error("invalid Worker deployment response")
+    end
+  ' "$input_file" >"$output_file"
+}
+
+current_worker_deployment() {
   local output_file=$1
+  local raw_output_file="$output_file.raw"
 
   "$wrangler" deployments status \
     --config "$worker_config" \
-    --json >"$output_file" || return 1
+    --json >"$raw_output_file" || return 1
+  validate_worker_deployment "$raw_output_file" "$output_file"
+}
+
+deployment_id() {
+  jq -er '.id' "$1"
+}
+
+deployment_assignment() {
+  jq -cer '[.versions[] | {version_id, percentage}] | sort_by(.version_id)' "$1"
+}
+
+worker_deployments() {
+  local output_file=$1
+  local response_file="$output_file.response"
+  local header_file="$temporary_directory/cloudflare-api-header"
+
+  (umask 077; printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" >"$header_file")
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --header "@$header_file" \
+    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$worker_name/deployments" \
+    >"$response_file" || return 1
   jq -er '
-    .versions
-    | if length == 1 and .[0].percentage == 100
-      then .[0].version_id
-      else error("production is not assigned to one Worker version at 100%")
-      end
-  ' "$output_file"
+    if .success == true and (.result.deployments | type == "array")
+      then .result.deployments
+      else error("invalid Worker deployment history response")
+    end
+  ' "$response_file" >"$output_file"
+}
+
+restore_worker_deployment() {
+  local target_deployment=$1
+  local expected_replaced_deployment_id=$2
+  local maximum_attempts=4
+  local target_file="$temporary_directory/restore-target.json"
+  local active_deployment
+  local active_deployment_id
+  local deployment_history
+  local predecessor_deployment
+  local predecessor_deployment_id
+  local restoration_deployment
+  local restoration_deployment_id
+  local restoration_deployment_raw
+  local restoration_message
+  local specification_file
+  local target_assignment
+  local attempt
+  local -a deployment_specifications
+
+  jq -e '.' "$target_deployment" >"$target_file" || return 1
+  for ((attempt = 1; attempt <= maximum_attempts; attempt++)); do
+    specification_file="$temporary_directory/restore-specifications-$attempt.txt"
+    if ! jq -er \
+      '.versions[] | "\(.version_id)@\(.percentage)%"' \
+      "$target_file" >"$specification_file"; then
+      return 1
+    fi
+    mapfile -t deployment_specifications <"$specification_file"
+    if [[ ${#deployment_specifications[@]} -eq 0 ]]; then
+      return 1
+    fi
+
+    restoration_message="Reconcile incomplete publication $release_tag ($attempt)"
+    if ! "$wrangler" versions deploy "${deployment_specifications[@]}" \
+      --config "$worker_config" \
+      --message "$restoration_message" \
+      --yes; then
+      echo "Worker reconciliation command failed; inspecting deployment history." >&2
+    fi
+
+    deployment_history="$temporary_directory/restore-history-$attempt.json"
+    restoration_deployment_raw="$temporary_directory/restoration-$attempt.raw.json"
+    restoration_deployment="$temporary_directory/restoration-$attempt.json"
+    target_assignment=$(deployment_assignment "$target_file") || return 1
+    if ! worker_deployments "$deployment_history" ||
+      ! jq -er \
+        --arg message "$restoration_message" \
+        --argjson assignment "$target_assignment" \
+        '
+          [
+            .[]
+            | select(
+                ([.versions[] | {version_id, percentage}] | sort_by(.version_id)) == $assignment
+                and (.annotations["workers/message"] // "") == $message
+              )
+          ]
+          | if length == 1 then .[0]
+            else error("reconciliation does not own exactly one Worker deployment")
+            end
+        ' "$deployment_history" >"$restoration_deployment_raw" ||
+      ! validate_worker_deployment "$restoration_deployment_raw" "$restoration_deployment"; then
+      return 1
+    fi
+    restoration_deployment_id=$(deployment_id "$restoration_deployment") || return 1
+
+    active_deployment="$temporary_directory/restore-active-$attempt.json"
+    current_worker_deployment "$active_deployment" || return 1
+    active_deployment_id=$(deployment_id "$active_deployment") || return 1
+    if [[ "$active_deployment_id" != "$restoration_deployment_id" ]]; then
+      echo "A newer Worker deployment superseded reconciliation; leaving it untouched." >&2
+      return 0
+    fi
+
+    predecessor_deployment="$temporary_directory/restore-predecessor-$attempt.json"
+    if ! jq -er \
+      --arg deployment_id "$restoration_deployment_id" \
+      '
+        if length > 1 and .[0].id == $deployment_id then .[1]
+        else error("reconciliation is not the latest deployment with a predecessor")
+        end
+      ' "$deployment_history" >"$predecessor_deployment.raw" ||
+      ! validate_worker_deployment "$predecessor_deployment.raw" "$predecessor_deployment"; then
+      return 1
+    fi
+    predecessor_deployment_id=$(deployment_id "$predecessor_deployment") || return 1
+    if [[ "$predecessor_deployment_id" == "$expected_replaced_deployment_id" ]]; then
+      return 0
+    fi
+
+    echo "A concurrent Worker deployment was replaced during reconciliation; restoring its assignment." >&2
+    jq -e '.' "$predecessor_deployment" >"$target_file" || return 1
+    expected_replaced_deployment_id=$restoration_deployment_id
+  done
+
+  return 1
 }
 
 delete_incomplete_release() {
@@ -76,7 +229,7 @@ delete_incomplete_release() {
 
 cleanup() {
   local status=$?
-  local active_version
+  local active_deployment_id
   local release_state=missing
 
   trap - EXIT
@@ -97,25 +250,24 @@ cleanup() {
   if [[ \
     $status -ne 0 && \
     $release_state == draft && \
-    $cloudflare_deployed == true && \
+    $publication_owns_production == true && \
     $release_published == false \
   ]]; then
-    if ! active_version=$(active_worker_version "$temporary_directory/rollback-status.json"); then
+    if ! current_worker_deployment "$temporary_directory/rollback-status.json"; then
       cloudflare_state_uncertain=true
-      echo "Unable to confirm the active Worker version; preserving the draft release." >&2
-    elif [[ "$active_version" == "$previous_worker_version" ]]; then
-      cloudflare_deployed=false
-    elif [[ "$active_version" != "$new_worker_version" ]]; then
+      echo "Unable to confirm the active Worker deployment; preserving the draft release." >&2
+    elif ! active_deployment_id=$(deployment_id "$temporary_directory/rollback-status.json"); then
       cloudflare_state_uncertain=true
-      echo "A different Worker version is active; preserving the draft release." >&2
-    elif "$wrangler" rollback "$previous_worker_version" \
-      --config "$worker_config" \
-      --message "Rollback incomplete publication $release_tag" \
-      --yes; then
-      cloudflare_deployed=false
-      echo "Restored Worker version $previous_worker_version." >&2
+      echo "Unable to identify the active Worker deployment; preserving the draft release." >&2
+    elif [[ "$active_deployment_id" != "$new_deployment_id" ]]; then
+      publication_owns_production=false
+      echo "The publication no longer owns production; leaving the active deployment untouched." >&2
+    elif restore_worker_deployment "$rollback_deployment_file" "$new_deployment_id"; then
+      publication_owns_production=false
+      echo "Restored the Worker deployment that preceded $release_tag." >&2
     else
-      echo "Unable to restore Worker version $previous_worker_version; preserving the draft release." >&2
+      cloudflare_state_uncertain=true
+      echo "Unable to restore the preceding Worker deployment; preserving the draft release." >&2
     fi
   fi
 
@@ -123,7 +275,7 @@ cleanup() {
     $status -ne 0 && \
     $release_state == draft && \
     $release_published == false && \
-    $cloudflare_deployed == false && \
+    $publication_owns_production == false && \
     $cloudflare_state_uncertain == false \
   ]]; then
     delete_incomplete_release
@@ -134,7 +286,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in base64 find gh jq python3 realpath sha256sum stat; do
+for command in base64 curl find gh jq python3 realpath sha256sum stat; do
   if ! command -v "$command" >/dev/null; then
     echo "Required command is unavailable: $command" >&2
     exit 1
@@ -154,6 +306,14 @@ if [[ "$release_tag" != "$expected_release_tag" ]]; then
 fi
 if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GITHUB_SHA is not a full commit ID." >&2
+  exit 1
+fi
+if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+  echo "CLOUDFLARE_ACCOUNT_ID is not a valid account ID." >&2
+  exit 1
+fi
+if [[ "$CLOUDFLARE_API_TOKEN" == *$'\n'* || "$CLOUDFLARE_API_TOKEN" == *$'\r'* ]]; then
+  echo "CLOUDFLARE_API_TOKEN contains invalid line breaks." >&2
   exit 1
 fi
 if [[ "$REPOSITORY_URL" != https://*/ || "$DOWNLOAD_BASE_URL" != https://*/ ]]; then
@@ -184,6 +344,11 @@ if [[ ! -f "$worker_config" || ! -d "$static_asset_directory/repo" ]]; then
   exit 1
 fi
 configured_asset_directory=$(jq -er '.assets.directory' "$worker_config")
+worker_name=$(jq -er '.name' "$worker_config")
+if [[ ! "$worker_name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "Wrangler contains an invalid Worker name: $worker_name" >&2
+  exit 1
+fi
 if [[ \
   "$(realpath "$worker_directory/$configured_asset_directory")" != \
   "$(realpath "$static_asset_directory")" \
@@ -234,11 +399,13 @@ for static_file in "${static_files[@]}"; do
   fi
 done
 
-previous_worker_version=$(active_worker_version "$temporary_directory/previous-deployment.json")
-if [[ ! "$previous_worker_version" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-  echo "Unable to identify the current Worker version." >&2
+previous_deployment="$temporary_directory/previous-deployment.json"
+if ! current_worker_deployment "$previous_deployment"; then
+  echo "Unable to inspect the current Worker deployment." >&2
   exit 1
 fi
+previous_deployment_id=$(deployment_id "$previous_deployment")
+jq -e '.' "$previous_deployment" >"$rollback_deployment_file"
 
 release_metadata=$(jq -cn \
   --slurpfile upstream "$upstream_metadata" \
@@ -300,51 +467,133 @@ if [[ ! "$new_worker_version" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
   exit 1
 fi
 
-worker_version_before_promotion=$(active_worker_version \
-  "$temporary_directory/pre-promotion-deployment.json")
-if [[ "$worker_version_before_promotion" != "$previous_worker_version" ]]; then
+pre_promotion_deployment="$temporary_directory/pre-promotion-deployment.json"
+if ! current_worker_deployment "$pre_promotion_deployment"; then
+  echo "Unable to confirm the Worker deployment before promotion." >&2
+  exit 1
+fi
+deployment_id_before_promotion=$(deployment_id "$pre_promotion_deployment")
+if [[ "$deployment_id_before_promotion" != "$previous_deployment_id" ]]; then
   echo "The active Worker deployment changed during publication; refusing to overwrite it." >&2
   exit 1
 fi
 
-if "$wrangler" versions deploy "${new_worker_version}@100%" \
+if ! "$wrangler" versions deploy "${new_worker_version}@100%" \
   --config "$worker_config" \
   --message "Publish $release_tag" \
   --yes; then
-  cloudflare_deployed=true
-else
-  echo "Worker deployment command failed; checking the active version." >&2
-  if active_version=$(active_worker_version "$temporary_directory/failed-deployment-status.json"); then
-    if [[ "$active_version" == "$new_worker_version" ]]; then
-      cloudflare_deployed=true
-      echo "Worker version $new_worker_version is active despite the command failure." >&2
-    elif [[ "$active_version" != "$previous_worker_version" ]]; then
-      cloudflare_state_uncertain=true
-    fi
-  else
-    cloudflare_state_uncertain=true
-  fi
-  if [[ $cloudflare_deployed == false ]]; then
+  echo "Worker deployment command failed; reconciling against deployment history." >&2
+fi
+
+deployment_history="$temporary_directory/post-promotion-history.json"
+if ! worker_deployments "$deployment_history"; then
+  cloudflare_state_uncertain=true
+  echo "Unable to inspect Worker deployment history after promotion." >&2
+  exit 1
+fi
+
+owned_deployment_raw="$temporary_directory/owned-deployment.raw.json"
+owned_deployment="$temporary_directory/owned-deployment.json"
+if ! jq -er \
+  --arg version "$new_worker_version" \
+  --arg message "Publish $release_tag" \
+  '
+    [
+      .[]
+      | select(
+          (.versions | length == 1)
+          and .versions[0].version_id == $version
+          and .versions[0].percentage == 100
+          and (.annotations["workers/message"] // "") == $message
+        )
+    ]
+    | if length == 1 then .[0]
+      else error("publication does not own exactly one Worker deployment")
+      end
+  ' "$deployment_history" >"$owned_deployment_raw" ||
+  ! validate_worker_deployment "$owned_deployment_raw" "$owned_deployment"; then
+  cloudflare_state_uncertain=true
+  echo "Unable to identify the Worker deployment created for $release_tag." >&2
+  exit 1
+fi
+new_deployment_id=$(deployment_id "$owned_deployment")
+publication_owns_production=true
+
+post_promotion_deployment="$temporary_directory/post-promotion-deployment.json"
+if ! current_worker_deployment "$post_promotion_deployment"; then
+  cloudflare_state_uncertain=true
+  echo "Unable to confirm the Worker deployment after promotion." >&2
+  exit 1
+fi
+active_deployment_id=$(deployment_id "$post_promotion_deployment")
+if [[ "$active_deployment_id" != "$new_deployment_id" ]]; then
+  publication_owns_production=false
+  echo "A newer Worker deployment superseded $release_tag; refusing to publish it." >&2
+  exit 1
+fi
+
+predecessor_deployment_raw="$temporary_directory/predecessor-deployment.raw.json"
+if ! jq -er \
+  --arg deployment_id "$new_deployment_id" \
+  '
+    if length > 1 and .[0].id == $deployment_id then .[1]
+    else error("owned deployment is not the latest deployment with a predecessor")
+    end
+  ' "$deployment_history" >"$predecessor_deployment_raw" ||
+  ! validate_worker_deployment "$predecessor_deployment_raw" "$rollback_deployment_file"; then
+  cloudflare_state_uncertain=true
+  echo "Unable to identify the Worker deployment that preceded $release_tag." >&2
+  exit 1
+fi
+predecessor_deployment_id=$(deployment_id "$rollback_deployment_file")
+if [[ "$predecessor_deployment_id" != "$previous_deployment_id" ]]; then
+  echo "Another Worker deployment won the promotion race; restoring it instead of publishing $release_tag." >&2
+  exit 1
+fi
+
+pre_publication_deployment="$temporary_directory/pre-publication-deployment.json"
+if ! current_worker_deployment "$pre_publication_deployment"; then
+  cloudflare_state_uncertain=true
+  echo "Unable to confirm the active Worker deployment before publishing the release." >&2
+  exit 1
+fi
+deployment_id_before_publication=$(deployment_id "$pre_publication_deployment")
+if [[ "$deployment_id_before_publication" != "$new_deployment_id" ]]; then
+  publication_owns_production=false
+  echo "The publication lost Worker deployment ownership before the GitHub release was published." >&2
+  exit 1
+fi
+
+if ! gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+  -F draft=false \
+  -F prerelease="$upstream_prerelease" \
+  -f make_latest="$make_latest" \
+  >/dev/null; then
+  echo "GitHub release publication returned an error; reconciling its state." >&2
+  if ! github_release_is_draft=$(gh api \
+    "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+    --jq '.draft' 2>/dev/null) ||
+    [[ "$github_release_is_draft" != false ]]; then
     exit 1
   fi
+  echo "$release_tag is published despite the command error; continuing reconciliation." >&2
 fi
-
-if ! worker_version_before_publication=$(active_worker_version \
-  "$temporary_directory/pre-publication-deployment.json"); then
-  cloudflare_state_uncertain=true
-  echo "Unable to confirm the active Worker version before publishing the release." >&2
-  exit 1
-fi
-if [[ "$worker_version_before_publication" != "$new_worker_version" ]]; then
-  echo "Worker version $new_worker_version lost deployment ownership before publication." >&2
-  exit 1
-fi
-
-gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-  -F draft=false \
-  -F prerelease=false \
-  -f make_latest=true \
-  >/dev/null
 release_published=true
 
-echo "Published $release_tag with Worker version $new_worker_version"
+post_publication_deployment="$temporary_directory/post-publication-deployment.json"
+if ! current_worker_deployment "$post_publication_deployment" ||
+  ! deployment_id_after_publication=$(deployment_id "$post_publication_deployment") ||
+  [[ "$deployment_id_after_publication" != "$new_deployment_id" ]]; then
+  echo "Worker deployment ownership changed while the GitHub release was being published." >&2
+  if gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+    -F draft=true \
+    >/dev/null; then
+    release_published=false
+    echo "Returned $release_tag to draft state because publication was not consistent." >&2
+  else
+    echo "Unable to return $release_tag to draft state; preserving the published release." >&2
+  fi
+  exit 1
+fi
+
+echo "Published $release_tag with Worker deployment $new_deployment_id"

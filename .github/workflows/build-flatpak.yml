@@ -11,8 +11,7 @@ on:
   schedule:
     - cron: '17 */4 * * *'
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: moonlight-flatpak-release
@@ -31,11 +30,15 @@ env:
 jobs:
   check-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       should_build: ${{ steps.decision.outputs.should_build }}
     steps:
       - name: Check out packaging sources
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Resolve eligible upstream release
         env:
@@ -98,6 +101,8 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     container:
       image: fedora:44
       options: --privileged
@@ -109,6 +114,7 @@ jobs:
         run: |
           dnf install -y \
             coreutils \
+            curl \
             findutils \
             flatpak \
             flatpak-builder \
@@ -122,6 +128,8 @@ jobs:
 
       - name: Check out packaging sources
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Restore resolved upstream release
         uses: actions/download-artifact@v8
@@ -219,7 +227,6 @@ jobs:
             --default-branch=master \
             --gpg-sign="$signing_key_id" \
             --gpg-homedir="$signing_home" \
-            --prune \
             "$FLATPAK_REPOSITORY"
 
       - name: Lint repository

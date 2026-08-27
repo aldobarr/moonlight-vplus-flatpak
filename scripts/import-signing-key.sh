@@ -32,7 +32,9 @@ fingerprint=${fingerprints[0]}
 
 exported_public_key=$(mktemp "$GNUPGHOME/exported-public-key.XXXXXX")
 gpg --batch --export "$fingerprint" >"$exported_public_key"
-if ! cmp --silent "$public_key" "$exported_public_key"; then
+committed_public_key_digest=$(sha256sum -- "$public_key" | cut -d ' ' -f 1)
+exported_public_key_digest=$(sha256sum -- "$exported_public_key" | cut -d ' ' -f 1)
+if [[ "$committed_public_key_digest" != "$exported_public_key_digest" ]]; then
   echo "The signing secret does not match the committed public key." >&2
   exit 1
 fi
