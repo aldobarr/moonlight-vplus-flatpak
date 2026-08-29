@@ -9,7 +9,6 @@ fi
 : "${BUNDLE_NAME:?BUNDLE_NAME is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
-: "${DOWNLOAD_BASE_URL:?DOWNLOAD_BASE_URL is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
@@ -25,8 +24,7 @@ worker_directory=$4
 worker_config="$worker_directory/wrangler.jsonc"
 wrangler="$worker_directory/node_modules/.bin/wrangler"
 upstream_tag=$(jq -er '.tag' "$upstream_metadata")
-upstream_version=$(jq -er '.version' "$upstream_metadata")
-upstream_url=$(jq -er '.html_url' "$upstream_metadata")
+upstream_title=$(jq -er '.release_title' "$upstream_metadata")
 upstream_prerelease=$(jq -er \
   '.prerelease | if type == "boolean" then tostring else error("prerelease must be a Boolean") end' \
   "$upstream_metadata")
@@ -43,7 +41,6 @@ expected_names=$(python3 scripts/release_protocol.py \
 expected_release_tag=$(jq -er '.release_tag' <<<"$expected_names")
 expected_bundle_name=$(jq -er '.bundle_name' <<<"$expected_names")
 bundle="$asset_directory/$BUNDLE_NAME"
-download_url="${DOWNLOAD_BASE_URL}${release_tag}/${BUNDLE_NAME}"
 temporary_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonlight-release.XXXXXX")
 release_created=false
 release_id=
@@ -147,8 +144,8 @@ if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GITHUB_SHA is not a full commit ID." >&2
   exit 1
 fi
-if [[ "$REPOSITORY_URL" != https://*/ || "$DOWNLOAD_BASE_URL" != https://*/ ]]; then
-  echo "Repository and download base URLs must be HTTPS URLs ending in a slash." >&2
+if [[ "$REPOSITORY_URL" != https://*/ ]]; then
+  echo "Repository URL must be an HTTPS URL ending in a slash." >&2
   exit 1
 fi
 if [[ "$BUNDLE_NAME" != "$expected_bundle_name" ]]; then
@@ -241,7 +238,7 @@ release_metadata=$(jq -cn \
   --arg release_tag "$release_tag" \
   '{
     repository_url: $repository_url,
-    upstream: ($upstream[0] | del(.release_notes)),
+    upstream: ($upstream[0] | del(.release_notes, .release_body)),
     packaging: {
       commit: $packaging_commit,
       release_tag: $release_tag
@@ -249,20 +246,17 @@ release_metadata=$(jq -cn \
   }')
 release_metadata_encoded=$(printf '%s' "$release_metadata" | base64 --wrap=0)
 notes_file="$temporary_directory/release-notes.md"
-{
-  printf 'Automated Flatpak packaging release for upstream Moonlight V+ %s.\n\n' "$upstream_tag"
-  printf -- '- Flatpak bundle: %s\n' "$download_url"
-  printf -- '- Upstream release: %s\n' "$upstream_url"
-  printf -- '- Upstream prerelease: %s\n' "$upstream_prerelease"
-  printf -- '- Update origin: %s\n' "$REPOSITORY_URL"
-  printf -- '- Packaging commit: %s\n\n' "$GITHUB_SHA"
-  printf '<!-- moonlight-flatpak-build-v1:%s -->\n' "$release_metadata_encoded"
-} >"$notes_file"
+jq -jr '.release_body' "$upstream_metadata" >"$notes_file"
+if [[ -s "$notes_file" ]]; then
+  printf '\n\n' >>"$notes_file"
+fi
+printf '<!-- moonlight-flatpak-build-v1:%s -->\n' \
+  "$release_metadata_encoded" >>"$notes_file"
 
 gh release create "$release_tag" \
   --repo "$GITHUB_REPOSITORY" \
   --target "$GITHUB_SHA" \
-  --title "v${upstream_version}" \
+  --title "$upstream_title" \
   --notes-file "$notes_file" \
   --draft
 release_created=true

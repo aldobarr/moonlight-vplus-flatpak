@@ -20,7 +20,6 @@ concurrency:
 env:
   APP_ID: com.github.qiin2333.Moonlight
   CLOUDFLARE_ASSET_DIRECTORY: cloudflare-assets
-  DOWNLOAD_BASE_URL: https://moonlight.barreras.dev/download/
   FLATPAK_REPOSITORY: cloudflare-assets/repo
   MANIFEST: com.github.qiin2333.Moonlight.json
   REPOSITORY_URL: https://moonlight.barreras.dev/repo/
@@ -59,7 +58,7 @@ jobs:
             arguments+=(--tag "$REQUESTED_TAG")
           fi
           python3 scripts/resolve-upstream-release.py "${arguments[@]}" > upstream-release.json
-          jq 'del(.release_notes)' upstream-release.json
+          jq 'del(.release_notes, .release_body)' upstream-release.json
 
       - name: Decide whether this release needs a build
         id: decision

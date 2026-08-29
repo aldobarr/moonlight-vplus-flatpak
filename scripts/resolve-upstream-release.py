@@ -79,6 +79,12 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
         release_notes = release.get("body")
     if not isinstance(release_notes, str):
         release_notes = ""
+    release_title = release.get("name")
+    if not isinstance(release_title, str) or not release_title:
+        release_title = tag
+    release_body = release.get("body")
+    if not isinstance(release_body, str):
+        release_body = ""
     return {
         "tag": tag,
         "version": version,
@@ -89,6 +95,8 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
         "selection": selection,
         "html_url": release.get("html_url"),
         "release_notes": release_notes,
+        "release_title": release_title,
+        "release_body": release_body,
     }
 
 
