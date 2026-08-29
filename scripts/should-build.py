@@ -32,35 +32,22 @@ def timestamp(value: Any) -> datetime:
 def decide(
     upstream: dict,
     current: dict | None,
-    packaging_commit: str,
-    repository_url: str,
 ) -> tuple[bool, str]:
-    if upstream.get("selection") == "manual":
-        return True, "Manual release selections are intentional overrides"
     if current is None:
-        return True, "No usable previous release metadata is available"
+        return True, "This upstream tag has not been published"
 
     current_upstream = current.get("upstream")
     current_packaging = current.get("packaging")
     if not isinstance(current_upstream, dict) or not isinstance(current_packaging, dict):
         raise ValueError("Previous build metadata is incomplete")
 
-    candidate_time = timestamp(upstream.get("published_at"))
-    current_time = timestamp(current_upstream.get("published_at"))
-
-    if current_upstream.get("tag") != upstream.get("tag") and current_time > candidate_time:
-        return False, "Current upstream selection is newer than the latest stable release"
-
-    same_inputs = (
-        current_upstream.get("commit") == upstream.get("commit")
-        and current_upstream.get("tag") == upstream.get("tag")
-        and current_upstream.get("prerelease") == upstream.get("prerelease")
-        and current_packaging.get("commit") == packaging_commit
-        and current.get("repository_url") == repository_url
-    )
-    if same_inputs:
-        return False, "Upstream and packaging commits are unchanged"
-    return True, "Build inputs changed"
+    upstream_tag = upstream.get("tag")
+    if (
+        current_upstream.get("tag") != upstream_tag
+        or current_packaging.get("release_tag") != upstream_tag
+    ):
+        raise ValueError("Published release metadata does not match its upstream tag")
+    return False, "This upstream tag already has a published Flatpak release"
 
 
 def load_json(path: Path) -> dict:
@@ -147,8 +134,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("upstream", type=Path)
     parser.add_argument("--current-release", type=Path)
-    parser.add_argument("--packaging-commit", required=True)
-    parser.add_argument("--repository-url", required=True)
     return parser.parse_args()
 
 
@@ -158,8 +143,6 @@ def main() -> None:
     should_build, reason = decide(
         upstream,
         load_optional_release(args.current_release),
-        args.packaging_commit,
-        args.repository_url,
     )
     print(json.dumps({"should_build": should_build, "reason": reason}))
 

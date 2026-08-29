@@ -11,8 +11,6 @@ fi
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
-: "${GITHUB_RUN_NUMBER:?GITHUB_RUN_NUMBER is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 : "${PACKAGING_RELEASE_TAG:?PACKAGING_RELEASE_TAG is required}"
 : "${REPOSITORY_URL:?REPOSITORY_URL is required}"
@@ -36,10 +34,7 @@ else
   make_latest=true
 fi
 release_tag=$PACKAGING_RELEASE_TAG
-expected_names=$(python3 scripts/release_protocol.py \
-  "$upstream_tag" \
-  --run-number "$GITHUB_RUN_NUMBER" \
-  --run-attempt "$GITHUB_RUN_ATTEMPT")
+expected_names=$(python3 scripts/release_protocol.py "$upstream_tag")
 expected_release_tag=$(jq -er '.release_tag' <<<"$expected_names")
 expected_bundle_name=$(jq -er '.bundle_name' <<<"$expected_names")
 bundle="$asset_directory/$BUNDLE_NAME"

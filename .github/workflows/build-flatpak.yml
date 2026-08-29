@@ -8,8 +8,8 @@ on:
         required: false
         default: ''
         type: string
-  schedule:
-    - cron: '17 */4 * * *'
+  #schedule:
+  #  - cron: '17 */4 * * *'
 
 permissions: {}
 
@@ -64,35 +64,34 @@ jobs:
         id: decision
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGING_COMMIT: ${{ github.sha }}
         run: |
           current_arguments=()
-          latest_release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
+          release_tag=$(jq -er '.tag' upstream-release.json)
+          encoded_release_tag=$(jq -rn --arg tag "$release_tag" '$tag | @uri')
+          release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${encoded_release_tag}"
           http_status=$(curl \
             --silent \
             --show-error \
             --header 'Accept: application/vnd.github+json' \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header 'X-GitHub-Api-Version: 2026-03-10' \
-            --output latest-packaging-release.json \
+            --output existing-packaging-release.json \
             --write-out '%{http_code}' \
-            "$latest_release_api")
+            "$release_api")
           if [[ "$http_status" == 200 ]]; then
-            latest_tag=$(jq -er '.tag_name' latest-packaging-release.json)
-            echo "Inspecting latest packaging release $latest_tag."
-            current_arguments+=(--current-release latest-packaging-release.json)
+            existing_tag=$(jq -er '.tag_name' existing-packaging-release.json)
+            echo "Inspecting existing packaging release $existing_tag."
+            current_arguments+=(--current-release existing-packaging-release.json)
           elif [[ "$http_status" == 404 ]]; then
-            echo "No published packaging release exists yet."
+            echo "No published packaging release exists for $release_tag."
           else
-            message=$(jq -r '.message // "unknown GitHub API error"' latest-packaging-release.json)
-            echo "Unable to inspect the latest packaging release (HTTP $http_status): $message" >&2
+            message=$(jq -r '.message // "unknown GitHub API error"' existing-packaging-release.json)
+            echo "Unable to inspect packaging release $release_tag (HTTP $http_status): $message" >&2
             exit 1
           fi
           decision=$(python3 scripts/should-build.py \
             upstream-release.json \
-            "${current_arguments[@]}" \
-            --packaging-commit "$PACKAGING_COMMIT" \
-            --repository-url "$REPOSITORY_URL")
+            "${current_arguments[@]}")
           echo "$decision" | jq .
           printf 'should_build=%s\n' "$(jq -r '.should_build' <<< "$decision")" >> "$GITHUB_OUTPUT"
 
@@ -168,10 +167,7 @@ jobs:
             --release-date "$upstream_release_date" \
             --release-url "$upstream_release_url" \
             --release-notes-base64 "$upstream_release_notes_base64"
-          release_names=$(python3 scripts/release_protocol.py \
-            "$upstream_tag" \
-            --run-number "$GITHUB_RUN_NUMBER" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT")
+          release_names=$(python3 scripts/release_protocol.py "$upstream_tag")
           {
             printf 'PACKAGING_RELEASE_TAG=%s\n' "$(jq -er '.release_tag' <<< "$release_names")"
             printf 'BUNDLE_NAME=%s\n' "$(jq -er '.bundle_name' <<< "$release_names")"
