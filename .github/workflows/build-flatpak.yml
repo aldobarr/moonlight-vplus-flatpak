@@ -59,7 +59,7 @@ jobs:
             arguments+=(--tag "$REQUESTED_TAG")
           fi
           python3 scripts/resolve-upstream-release.py "${arguments[@]}" > upstream-release.json
-          cat upstream-release.json
+          jq 'del(.release_notes)' upstream-release.json
 
       - name: Decide whether this release needs a build
         id: decision
@@ -159,12 +159,16 @@ jobs:
           upstream_version=$(jq -er '.version' upstream-release.json)
           upstream_commit=$(jq -er '.commit' upstream-release.json)
           upstream_release_date=$(jq -er '.release_date' upstream-release.json)
+          upstream_release_url=$(jq -er '.html_url' upstream-release.json)
+          upstream_release_notes_base64=$(jq -r '.release_notes | @base64' upstream-release.json)
           python3 scripts/update-manifest.py \
             "$MANIFEST" \
             --tag "$upstream_tag" \
             --commit "$upstream_commit" \
             --version "$upstream_version" \
-            --release-date "$upstream_release_date"
+            --release-date "$upstream_release_date" \
+            --release-url "$upstream_release_url" \
+            --release-notes-base64 "$upstream_release_notes_base64"
           release_names=$(python3 scripts/release_protocol.py \
             "$upstream_tag" \
             --run-number "$GITHUB_RUN_NUMBER" \

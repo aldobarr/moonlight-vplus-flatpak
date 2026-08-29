@@ -212,7 +212,9 @@
 				],
 				"env": {
 					"MOONLIGHT_FLATPAK_VERSION": "6.2.90",
-					"MOONLIGHT_FLATPAK_RELEASE_DATE": "2026-07-03"
+					"MOONLIGHT_FLATPAK_RELEASE_DATE": "2026-07-03",
+					"MOONLIGHT_FLATPAK_RELEASE_URL": "https://github.com/qiin2333/moonlight-qt/releases/tag/v6.2.90",
+					"MOONLIGHT_FLATPAK_RELEASE_NOTES_BASE64": ""
 				},
 				"arch": {
 					"x86_64": {
@@ -224,7 +226,7 @@
 			},
 			"post-install": [
 				"mv /app/share/applications/com.moonlight_stream.Moonlight.desktop /app/share/applications/com.github.qiin2333.Moonlight.desktop",
-				"python3 update-appstream-metadata.py /app/share/metainfo/com.moonlight_stream.Moonlight.appdata.xml --app-id=com.github.qiin2333.Moonlight --version=\"${MOONLIGHT_FLATPAK_VERSION}\" --release-date=\"${MOONLIGHT_FLATPAK_RELEASE_DATE}\"",
+				"python3 update-appstream-metadata.py /app/share/metainfo/com.moonlight_stream.Moonlight.appdata.xml --app-id=com.github.qiin2333.Moonlight --version=\"${MOONLIGHT_FLATPAK_VERSION}\" --release-date=\"${MOONLIGHT_FLATPAK_RELEASE_DATE}\" --release-url=\"${MOONLIGHT_FLATPAK_RELEASE_URL}\" --release-notes-base64=\"${MOONLIGHT_FLATPAK_RELEASE_NOTES_BASE64}\"",
 				"mv /app/share/metainfo/com.moonlight_stream.Moonlight.appdata.xml /app/share/metainfo/com.github.qiin2333.Moonlight.metainfo.xml"
 			],
 			"sources": [

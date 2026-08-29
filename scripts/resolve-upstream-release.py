@@ -29,7 +29,7 @@ class GitHubClient:
         request = urllib.request.Request(
             f"{API_ROOT}{path}",
             headers={
-                "Accept": "application/vnd.github+json",
+                "Accept": "application/vnd.github.full+json",
                 "User-Agent": "moonlight-vplus-flatpak-release-resolver",
                 "X-GitHub-Api-Version": "2026-03-10",
             },
@@ -74,6 +74,11 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
 
     version = tag[1:] if tag.startswith("v") else tag
     commit = resolve_tag_commit(client, tag)
+    release_notes = release.get("body_text")
+    if not isinstance(release_notes, str):
+        release_notes = release.get("body")
+    if not isinstance(release_notes, str):
+        release_notes = ""
     return {
         "tag": tag,
         "version": version,
@@ -83,6 +88,7 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
         "prerelease": bool(release.get("prerelease")),
         "selection": selection,
         "html_url": release.get("html_url"),
+        "release_notes": release_notes,
     }
 
 
