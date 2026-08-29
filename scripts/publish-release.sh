@@ -25,6 +25,8 @@ worker_config="$worker_directory/wrangler.jsonc"
 wrangler="$worker_directory/node_modules/.bin/wrangler"
 upstream_tag=$(jq -er '.tag' "$upstream_metadata")
 upstream_title=$(jq -er '.release_title' "$upstream_metadata")
+upstream_published_at=$(jq -er '.published_at | select(type == "string")' \
+  "$upstream_metadata")
 upstream_prerelease=$(jq -er \
   '.prerelease | if type == "boolean" then tostring else error("prerelease must be a Boolean") end' \
   "$upstream_metadata")
@@ -43,6 +45,7 @@ expected_bundle_name=$(jq -er '.bundle_name' <<<"$expected_names")
 bundle="$asset_directory/$BUNDLE_NAME"
 temporary_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonlight-release.XXXXXX")
 release_created=false
+release_tag_created=false
 release_id=
 previous_worker_version=
 new_worker_version=
@@ -71,6 +74,16 @@ delete_incomplete_release() {
     echo "Deleted incomplete release and tag $release_tag." >&2
   else
     echo "Unable to delete incomplete release and tag $release_tag." >&2
+  fi
+}
+
+delete_incomplete_tag() {
+  if gh api --method DELETE \
+    "repos/$GITHUB_REPOSITORY/git/refs/tags/$release_tag" \
+    >/dev/null; then
+    echo "Deleted incomplete tag $release_tag." >&2
+  else
+    echo "Unable to delete incomplete tag $release_tag." >&2
   fi
 }
 
@@ -115,6 +128,8 @@ cleanup() {
     if [[ "$release_state" == draft && $safe_to_delete == true ]]; then
       delete_incomplete_release
     fi
+  elif [[ $status -ne 0 && $release_tag_created == true ]]; then
+    delete_incomplete_tag
   fi
 
   rm -rf -- "$temporary_directory"
@@ -253,9 +268,42 @@ fi
 printf '<!-- moonlight-flatpak-build-v1:%s -->\n' \
   "$release_metadata_encoded" >>"$notes_file"
 
+tag_payload=$(jq -cn \
+  --arg tag "$release_tag" \
+  --arg message "Flatpak release for $upstream_tag" \
+  --arg object "$GITHUB_SHA" \
+  --arg date "$upstream_published_at" '
+    {
+      tag: $tag,
+      message: $message,
+      object: $object,
+      type: "commit",
+      tagger: {
+        name: "github-actions[bot]",
+        email: "41898282+github-actions[bot]@users.noreply.github.com",
+        date: $date
+      }
+    }
+  ')
+tag_object_sha=$(gh api --method POST \
+  "repos/$GITHUB_REPOSITORY/git/tags" \
+  --input - \
+  --jq .sha <<<"$tag_payload")
+if [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "GitHub did not create an annotated release tag." >&2
+  exit 1
+fi
+gh api --method POST \
+  "repos/$GITHUB_REPOSITORY/git/refs" \
+  -f ref="refs/tags/$release_tag" \
+  -f sha="$tag_object_sha" \
+  >/dev/null
+release_tag_created=true
+
 gh release create "$release_tag" \
   --repo "$GITHUB_REPOSITORY" \
   --target "$GITHUB_SHA" \
+  --verify-tag \
   --title "$upstream_title" \
   --notes-file "$notes_file" \
   --draft

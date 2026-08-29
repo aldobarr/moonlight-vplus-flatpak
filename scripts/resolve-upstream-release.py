@@ -74,17 +74,17 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
 
     version = tag[1:] if tag.startswith("v") else tag
     commit = resolve_tag_commit(client, tag)
-    release_notes = release.get("body_text")
-    if not isinstance(release_notes, str):
-        release_notes = release.get("body")
-    if not isinstance(release_notes, str):
-        release_notes = ""
     release_title = release.get("name")
     if not isinstance(release_title, str) or not release_title:
         release_title = tag
     release_body = release.get("body")
     if not isinstance(release_body, str):
         release_body = ""
+    if not release_body.strip():
+        release_body = resolve_commit_message(client, commit)
+    release_notes = release.get("body_text")
+    if not isinstance(release_notes, str) or not release_notes.strip():
+        release_notes = release_body
     return {
         "tag": tag,
         "version": version,
@@ -120,6 +120,16 @@ def resolve_tag_commit(client: GitHubClient, tag: str) -> str:
         target = tag_object.get("object")
 
     raise ValueError(f"Unable to resolve upstream tag {tag!r} to a commit")
+
+
+def resolve_commit_message(client: GitHubClient, commit: str) -> str:
+    commit_object = client.get_json(
+        f"/repos/{UPSTREAM_REPOSITORY}/git/commits/{commit}"
+    )
+    message = commit_object.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError(f"Upstream commit {commit!r} has no release message")
+    return message
 
 
 def parse_args() -> argparse.Namespace:
