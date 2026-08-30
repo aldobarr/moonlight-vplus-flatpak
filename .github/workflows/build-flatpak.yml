@@ -128,6 +128,7 @@ jobs:
             git \
             gnupg2 \
             jq \
+            librsvg2-tools \
             nodejs \
             npm \
             python3
@@ -231,6 +232,11 @@ jobs:
             --gpg-sign="$signing_key_id" \
             --gpg-homedir="$signing_home" \
             "$FLATPAK_REPOSITORY"
+          rsvg-convert \
+            --width=256 \
+            --height=256 \
+            --output="$FLATPAK_REPOSITORY/moonlight.png" \
+            "build-dir/files/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 
       - name: Lint repository
         run: |

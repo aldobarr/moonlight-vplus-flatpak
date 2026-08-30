@@ -16,6 +16,7 @@ from typing import Any
 
 
 VERSION_PATTERN = re.compile(r"^[0-9][0-9A-Za-z.+_-]*$")
+REMOTE_ICON_URL = "https://moonlight.barreras.dev/repo/moonlight.png"
 
 
 def update_metadata(
@@ -48,6 +49,12 @@ def update_metadata(
     if launchable is None:
         raise ValueError("AppStream metadata does not contain a desktop launchable")
     launchable.text = f"{app_id}.desktop"
+
+    remote_icon = component.find("icon[@type='remote']")
+    if remote_icon is None:
+        remote_icon = ET.SubElement(component, "icon")
+    remote_icon.attrib = {"type": "remote", "width": "256", "height": "256"}
+    remote_icon.text = REMOTE_ICON_URL
 
     releases = component.find("releases")
     if releases is None:
