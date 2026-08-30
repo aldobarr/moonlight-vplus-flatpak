@@ -188,6 +188,13 @@ jobs:
             --force-clean \
             build-dir \
             "$MANIFEST"
+          upstream_version=$(jq -er '.version' upstream-release.json)
+          upstream_release_history_base64=$(jq -er '.release_history | tojson | @base64' upstream-release.json)
+          python3 scripts/update-appstream-metadata.py \
+            "build-dir/files/share/app-info/xmls/$APP_ID.xml.gz" \
+            --app-id="$APP_ID" \
+            --version="$upstream_version" \
+            --release-history-base64="$upstream_release_history_base64"
 
       - name: Lint build directory
         run: |

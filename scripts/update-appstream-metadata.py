@@ -8,6 +8,7 @@ import argparse
 import base64
 import binascii
 import datetime as dt
+import gzip
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -37,8 +38,15 @@ def update_metadata(
         raise ValueError("Invalid base64-encoded release history") from error
     validate_release_history(release_history, version)
 
-    tree = ET.parse(path)
-    component = tree.getroot()
+    if path.suffix == ".gz":
+        tree = ET.ElementTree(ET.fromstring(gzip.decompress(path.read_bytes())))
+    else:
+        tree = ET.parse(path)
+
+    root = tree.getroot()
+    component = root if root.tag == "component" else root.find("component")
+    if component is None:
+        raise ValueError("AppStream metadata does not contain a component")
 
     component_id = component.find("id")
     if component_id is None or not component_id.text:
@@ -81,7 +89,11 @@ def update_metadata(
                 ET.SubElement(description, "p").text = paragraph
 
     ET.indent(tree, space="  ")
-    tree.write(path, encoding="UTF-8", xml_declaration=True)
+    if path.suffix == ".gz":
+        xml = ET.tostring(root, encoding="UTF-8", xml_declaration=True)
+        path.write_bytes(gzip.compress(xml, mtime=0))
+    else:
+        tree.write(path, encoding="UTF-8", xml_declaration=True)
 
 
 def validate_release_history(value: Any, current_version: str) -> None:
