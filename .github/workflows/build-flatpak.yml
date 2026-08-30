@@ -148,8 +148,8 @@ jobs:
         run: |
           flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --noninteractive -y flathub \
-            org.kde.Platform//6.10 \
-            org.kde.Sdk//6.10 \
+            org.kde.Platform//6.11 \
+            org.kde.Sdk//6.11 \
             org.flatpak.Builder//stable
 
       - name: Create resolved build manifest
