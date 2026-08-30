@@ -14,9 +14,7 @@ def update_manifest(
     tag: str,
     commit: str,
     version: str,
-    release_date: str,
-    release_url: str,
-    release_notes_base64: str,
+    release_history_base64: str,
 ) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     moonlight_modules = [
@@ -40,9 +38,10 @@ def update_manifest(
     build_options = moonlight.setdefault("build-options", {})
     environment = build_options.setdefault("env", {})
     environment["MOONLIGHT_FLATPAK_VERSION"] = version
-    environment["MOONLIGHT_FLATPAK_RELEASE_DATE"] = release_date
-    environment["MOONLIGHT_FLATPAK_RELEASE_URL"] = release_url
-    environment["MOONLIGHT_FLATPAK_RELEASE_NOTES_BASE64"] = release_notes_base64
+    environment["MOONLIGHT_FLATPAK_RELEASE_HISTORY_BASE64"] = release_history_base64
+    environment.pop("MOONLIGHT_FLATPAK_RELEASE_DATE", None)
+    environment.pop("MOONLIGHT_FLATPAK_RELEASE_URL", None)
+    environment.pop("MOONLIGHT_FLATPAK_RELEASE_NOTES_BASE64", None)
 
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
@@ -53,9 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--release-date", required=True)
-    parser.add_argument("--release-url", required=True)
-    parser.add_argument("--release-notes-base64", required=True)
+    parser.add_argument("--release-history-base64", required=True)
     return parser.parse_args()
 
 
@@ -66,9 +63,7 @@ def main() -> None:
         args.tag,
         args.commit,
         args.version,
-        args.release_date,
-        args.release_url,
-        args.release_notes_base64,
+        args.release_history_base64,
     )
 
 

@@ -8,9 +8,11 @@ import argparse
 import base64
 import binascii
 import datetime as dt
+import json
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 
 VERSION_PATTERN = re.compile(r"^[0-9][0-9A-Za-z.+_-]*$")
@@ -20,21 +22,19 @@ def update_metadata(
     path: Path,
     app_id: str,
     version: str,
-    release_date: str,
-    release_url: str,
-    release_notes_base64: str,
+    release_history_base64: str,
 ) -> None:
     if not VERSION_PATTERN.fullmatch(version):
         raise ValueError(f"Invalid AppStream version: {version!r}")
 
-    dt.date.fromisoformat(release_date)
     try:
-        release_notes = base64.b64decode(
-            release_notes_base64,
+        release_history = json.loads(base64.b64decode(
+            release_history_base64,
             validate=True,
-        ).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError) as error:
-        raise ValueError("Invalid base64-encoded release notes") from error
+        ).decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Invalid base64-encoded release history") from error
+    validate_release_history(release_history, version)
 
     tree = ET.parse(path)
     component = tree.getroot()
@@ -55,21 +55,49 @@ def update_metadata(
     else:
         releases.clear()
 
-    current_release = ET.SubElement(
-        releases,
-        "release",
-        {"version": version, "date": release_date},
-    )
-    details = ET.SubElement(current_release, "url", {"type": "details"})
-    details.text = release_url
-    paragraphs = [line.strip() for line in release_notes.splitlines() if line.strip()]
-    if paragraphs:
-        description = ET.SubElement(current_release, "description")
-        for paragraph in paragraphs:
-            ET.SubElement(description, "p").text = paragraph
+    for history_entry in release_history:
+        release = ET.SubElement(
+            releases,
+            "release",
+            {"version": history_entry["version"], "date": history_entry["date"]},
+        )
+        details = ET.SubElement(release, "url", {"type": "details"})
+        details.text = history_entry["url"]
+        paragraphs = [
+            line.strip()
+            for line in history_entry["description"].splitlines()
+            if line.strip()
+        ]
+        if paragraphs:
+            description = ET.SubElement(release, "description")
+            for paragraph in paragraphs:
+                ET.SubElement(description, "p").text = paragraph
 
     ET.indent(tree, space="  ")
     tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+
+def validate_release_history(value: Any, current_version: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise ValueError("Release history must be a non-empty list")
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ValueError("Release history entries must be objects")
+        version = entry.get("version")
+        release_date = entry.get("date")
+        release_url = entry.get("url")
+        description = entry.get("description")
+        if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
+            raise ValueError(f"Invalid AppStream version: {version!r}")
+        if not isinstance(release_date, str):
+            raise ValueError("Release history entry has no date")
+        dt.date.fromisoformat(release_date)
+        if not isinstance(release_url, str) or not release_url:
+            raise ValueError("Release history entry has no URL")
+        if not isinstance(description, str):
+            raise ValueError("Release history entry has no description")
+    if value[0]["version"] != current_version:
+        raise ValueError("Current version must be the first release history entry")
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,9 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("path", type=Path)
     parser.add_argument("--app-id", required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--release-date", required=True)
-    parser.add_argument("--release-url", required=True)
-    parser.add_argument("--release-notes-base64", required=True)
+    parser.add_argument("--release-history-base64", required=True)
     return parser.parse_args()
 
 
@@ -89,9 +115,7 @@ def main() -> None:
         args.path,
         args.app_id,
         args.version,
-        args.release_date,
-        args.release_url,
-        args.release_notes_base64,
+        args.release_history_base64,
     )
 
 

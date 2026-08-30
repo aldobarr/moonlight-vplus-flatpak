@@ -248,7 +248,7 @@ release_metadata=$(jq -cn \
   --arg release_tag "$release_tag" \
   '{
     repository_url: $repository_url,
-    upstream: ($upstream[0] | del(.release_notes, .release_body)),
+    upstream: ($upstream[0] | del(.release_notes, .release_body, .release_history)),
     packaging: {
       commit: $packaging_commit,
       release_tag: $release_tag

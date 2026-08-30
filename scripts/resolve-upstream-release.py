@@ -19,13 +19,15 @@ from release_protocol import validate_upstream_tag
 
 API_ROOT = "https://api.github.com"
 UPSTREAM_REPOSITORY = "qiin2333/moonlight-qt"
+STABLE_RELEASE_TAG_PATTERN = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
+RELEASE_VERSION_PREFIX_PATTERN = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)")
 
 
 class GitHubClient:
     def __init__(self, token: str | None = None) -> None:
         self.token = token
 
-    def get_json(self, path: str) -> dict[str, Any]:
+    def get_json(self, path: str) -> Any:
         request = urllib.request.Request(
             f"{API_ROOT}{path}",
             headers={
@@ -56,6 +58,9 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
         release = client.get_json(f"/repos/{UPSTREAM_REPOSITORY}/releases/latest")
         selection = "automated"
 
+    if not isinstance(release, dict):
+        raise ValueError("GitHub returned an invalid upstream Release")
+
     tag = release.get("tag_name")
     if not isinstance(tag, str):
         raise ValueError("Upstream Release does not contain a tag name")
@@ -77,14 +82,7 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
     release_title = release.get("name")
     if not isinstance(release_title, str) or not release_title:
         release_title = tag
-    release_body = release.get("body")
-    if not isinstance(release_body, str):
-        release_body = ""
-    if not release_body.strip():
-        release_body = resolve_commit_message(client, commit)
-    release_notes = release.get("body_text")
-    if not isinstance(release_notes, str) or not release_notes.strip():
-        release_notes = release_body
+    release_body, release_notes = resolve_release_text(client, release, commit)
     return {
         "tag": tag,
         "version": version,
@@ -97,7 +95,122 @@ def resolve_release(client: GitHubClient, requested_tag: str | None) -> dict[str
         "release_notes": release_notes,
         "release_title": release_title,
         "release_body": release_body,
+        "release_history": resolve_release_history(client, release, commit),
     }
+
+
+def list_releases(client: GitHubClient) -> list[dict[str, Any]]:
+    releases: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        result = client.get_json(
+            f"/repos/{UPSTREAM_REPOSITORY}/releases?per_page=100&page={page}"
+        )
+        if not isinstance(result, list) or not all(
+            isinstance(release, dict) for release in result
+        ):
+            raise ValueError("GitHub returned an invalid upstream Release list")
+        releases.extend(result)
+        if len(result) < 100:
+            return releases
+        page += 1
+
+
+def release_timestamp(release: dict[str, Any], tag: str) -> datetime:
+    published_at = release.get("published_at")
+    if not isinstance(published_at, str):
+        raise ValueError(f"Upstream Release {tag!r} has no publication timestamp")
+    return datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+
+
+def release_version(tag: str) -> tuple[int, int, int] | None:
+    match = RELEASE_VERSION_PREFIX_PATTERN.match(tag)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def resolve_release_text(
+    client: GitHubClient,
+    release: dict[str, Any],
+    commit: str | None = None,
+) -> tuple[str, str]:
+    body = release.get("body")
+    if not isinstance(body, str):
+        body = ""
+    if not body.strip():
+        tag = release.get("tag_name")
+        if not isinstance(tag, str):
+            raise ValueError("Upstream Release does not contain a tag name")
+        body = resolve_commit_message(
+            client,
+            commit or resolve_tag_commit(client, tag),
+        )
+
+    notes = release.get("body_text")
+    if not isinstance(notes, str) or not notes.strip():
+        notes = body
+    return body, notes
+
+
+def resolve_release_history(
+    client: GitHubClient,
+    selected_release: dict[str, Any],
+    selected_commit: str,
+) -> list[dict[str, str]]:
+    selected_tag = selected_release.get("tag_name")
+    if not isinstance(selected_tag, str):
+        raise ValueError("Upstream Release does not contain a tag name")
+    selected_timestamp = release_timestamp(selected_release, selected_tag)
+    selected_version = release_version(selected_tag)
+
+    history: list[
+        tuple[bool, tuple[int, int, int], datetime, dict[str, str]]
+    ] = []
+    seen_tags: set[str] = set()
+    for release in [selected_release, *list_releases(client)]:
+        tag = release.get("tag_name")
+        if not isinstance(tag, str) or tag in seen_tags or release.get("draft"):
+            continue
+        published_at = release_timestamp(release, tag)
+        if published_at > selected_timestamp:
+            continue
+        if tag != selected_tag and (
+            release.get("prerelease") or STABLE_RELEASE_TAG_PATTERN.fullmatch(tag) is None
+        ):
+            continue
+        version = release_version(tag)
+        if tag != selected_tag and selected_version is not None:
+            if version is None:
+                raise ValueError(f"Invalid stable Release version: {tag!r}")
+            if version > selected_version:
+                continue
+
+        seen_tags.add(tag)
+        _, notes = resolve_release_text(
+            client,
+            release,
+            selected_commit if tag == selected_tag else None,
+        )
+        release_url = release.get("html_url")
+        if not isinstance(release_url, str) or not release_url:
+            raise ValueError(f"Upstream Release {tag!r} has no URL")
+        history.append(
+            (
+                tag == selected_tag,
+                version or selected_version or (0, 0, 0),
+                published_at,
+                {
+                    "version": tag[1:] if tag.startswith("v") else tag,
+                    "date": published_at.date().isoformat(),
+                    "url": release_url,
+                    "description": notes,
+                },
+            )
+        )
+
+    history.sort(key=lambda item: item[:3], reverse=True)
+    return [release for _, _, _, release in history]
 
 
 def resolve_tag_commit(client: GitHubClient, tag: str) -> str:
