@@ -38,7 +38,8 @@ def update_metadata(
         raise ValueError("Invalid base64-encoded release history") from error
     validate_release_history(release_history, version)
 
-    if path.suffix == ".gz":
+    compiled_catalogue = path.suffix == ".gz"
+    if compiled_catalogue:
         tree = ET.ElementTree(ET.fromstring(gzip.decompress(path.read_bytes())))
     else:
         tree = ET.parse(path)
@@ -71,10 +72,18 @@ def update_metadata(
         releases.clear()
 
     for history_entry in release_history:
+        release_attributes = {"version": history_entry["version"]}
+        if compiled_catalogue:
+            release_date = dt.date.fromisoformat(history_entry["date"])
+            release_attributes["timestamp"] = str(
+                (release_date - dt.date(1970, 1, 1)).days * 86400
+            )
+        else:
+            release_attributes["date"] = history_entry["date"]
         release = ET.SubElement(
             releases,
             "release",
-            {"version": history_entry["version"], "date": history_entry["date"]},
+            release_attributes,
         )
         details = ET.SubElement(release, "url", {"type": "details"})
         details.text = history_entry["url"]
@@ -89,7 +98,7 @@ def update_metadata(
                 ET.SubElement(description, "p").text = paragraph
 
     ET.indent(tree, space="  ")
-    if path.suffix == ".gz":
+    if compiled_catalogue:
         xml = ET.tostring(root, encoding="UTF-8", xml_declaration=True)
         path.write_bytes(gzip.compress(xml, mtime=0))
     else:
