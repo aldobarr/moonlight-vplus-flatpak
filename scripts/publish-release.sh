@@ -14,6 +14,7 @@ fi
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 : "${PACKAGING_RELEASE_TAG:?PACKAGING_RELEASE_TAG is required}"
 : "${REPOSITORY_URL:?REPOSITORY_URL is required}"
+: "${R2_BUCKET_NAME:?R2_BUCKET_NAME is required}"
 
 asset_directory=$1
 upstream_metadata=$2
@@ -132,7 +133,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in base64 find gh jq python3 realpath sha256sum stat; do
+for command in base64 find gh jq python3 sha256sum stat; do
   if ! command -v "$command" >/dev/null; then
     echo "Required command is unavailable: $command" >&2
     exit 1
@@ -158,6 +159,10 @@ if [[ "$REPOSITORY_URL" != https://*/ ]]; then
   echo "Repository URL must be an HTTPS URL ending in a slash." >&2
   exit 1
 fi
+if [[ ! "$R2_BUCKET_NAME" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then
+  echo "Invalid R2 bucket name: $R2_BUCKET_NAME" >&2
+  exit 1
+fi
 if [[ "$BUNDLE_NAME" != "$expected_bundle_name" ]]; then
   echo "Bundle name does not match upstream tag $upstream_tag." >&2
   exit 1
@@ -181,12 +186,11 @@ if [[ ! -f "$worker_config" || ! -d "$static_asset_directory/repo" ]]; then
   echo "Worker configuration or generated Flatpak repository is missing." >&2
   exit 1
 fi
-configured_asset_directory=$(jq -er '.assets.directory' "$worker_config")
-if [[ \
-  "$(realpath "$worker_directory/$configured_asset_directory")" != \
-  "$(realpath "$static_asset_directory")" \
-]]; then
-  echo "Wrangler is not configured to upload $static_asset_directory." >&2
+configured_r2_bucket=$(jq -er \
+  '.r2_buckets[] | select(.binding == "FLATPAK_REPOSITORY") | .bucket_name' \
+  "$worker_config")
+if [[ "$configured_r2_bucket" != "$R2_BUCKET_NAME" ]]; then
+  echo "Wrangler is not configured to use R2 bucket $R2_BUCKET_NAME." >&2
   exit 1
 fi
 mapfile -d '' static_root_entries < <(
@@ -220,18 +224,6 @@ if [[ -n "$unexpected_entry" ]]; then
   echo "Cloudflare assets may contain only regular files and directories: $unexpected_entry" >&2
   exit 1
 fi
-mapfile -d '' static_files < <(find "$static_asset_directory" -type f -print0)
-if [[ ${#static_files[@]} -gt 20000 ]]; then
-  echo "Cloudflare Free supports at most 20,000 static asset files per Worker version." >&2
-  exit 1
-fi
-for static_file in "${static_files[@]}"; do
-  if [[ $(stat --format=%s "$static_file") -gt 26214400 ]]; then
-    echo "Cloudflare static asset exceeds 25 MiB: $static_file" >&2
-    exit 1
-  fi
-done
-
 if ! previous_worker_version=$(active_worker_version "$temporary_directory/previous-status.json"); then
   echo "Unable to inspect the current Worker deployment." >&2
   exit 1
@@ -240,6 +232,13 @@ if [[ ! "$previous_worker_version" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
   echo "The current Worker version ID is invalid." >&2
   exit 1
 fi
+
+repository_prefix="releases/$release_tag"
+bash scripts/upload-r2-repository.sh \
+  "$static_asset_directory" \
+  "$R2_BUCKET_NAME" \
+  "$repository_prefix" \
+  "$wrangler"
 
 release_metadata=$(jq -cn \
   --slurpfile upstream "$upstream_metadata" \
@@ -322,9 +321,10 @@ fi
 
 wrangler_output="$temporary_directory/wrangler-output.ndjson"
 WRANGLER_OUTPUT_FILE_PATH="$wrangler_output" \
-  "$wrangler" versions upload \
+"$wrangler" versions upload \
     --config "$worker_config" \
     --tag "$release_tag" \
+    --var "REPOSITORY_PREFIX:$repository_prefix" \
     --message "Flatpak repository for $release_tag"
 new_worker_version=$(jq -er \
   'select(.type == "version-upload" and .version == 1) | .version_id' \

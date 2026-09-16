@@ -23,6 +23,7 @@ env:
   FLATPAK_REPOSITORY: cloudflare-assets/repo
   MANIFEST: com.github.qiin2333.Moonlight.json
   REPOSITORY_URL: https://moonlight.barreras.dev/repo/
+  R2_BUCKET_NAME: moonlight-vplus-flatpak-repo
   RUNTIME_REPOSITORY: https://flathub.org/repo/flathub.flatpakrepo
   UPSTREAM_RELEASE_ARTIFACT: resolved-upstream-release
 
@@ -275,6 +276,9 @@ jobs:
 
       - name: Install Cloudflare deployment tool
         run: npm ci --prefix cloudflare-worker --no-audit --no-fund
+
+      - name: Test Cloudflare Worker and publication helpers
+        run: npm test --prefix cloudflare-worker
 
       - name: Publish release
         env:
