@@ -28,13 +28,12 @@ function repositoryEnv(getObject) {
           return getObject(key, options);
         },
       },
-      REPOSITORY_PREFIX: "releases/v6.4.2",
     },
     calls,
   };
 }
 
-test("serves repository objects from the versioned R2 prefix", async () => {
+test("serves repository objects from the same R2 keys as static assets", async () => {
   const { env, calls } = repositoryEnv(() => objectBody("summary"));
   const response = await worker.fetch(
     new Request("https://moonlight.barreras.dev/repo/summary"),
@@ -43,7 +42,7 @@ test("serves repository objects from the versioned R2 prefix", async () => {
 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "summary");
-  assert.equal(calls[0].key, "releases/v6.4.2/repo/summary");
+  assert.equal(calls[0].key, "repo/summary");
   assert.equal(calls[0].options.range, calls[0].options.onlyIf);
 });
 

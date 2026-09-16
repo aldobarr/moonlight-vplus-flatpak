@@ -35,7 +35,6 @@ test("uploads repository objects larger than the Workers Static Assets limit", (
         "scripts/upload-r2-repository.sh",
         assets,
         "moonlight-vplus-flatpak-repo",
-        "releases/v6.4.2",
         wrangler,
       ],
       {
@@ -49,7 +48,7 @@ test("uploads repository objects larger than the Workers Static Assets limit", (
     const log = readFileSync(wranglerLog, "utf8");
     assert.match(
       log,
-      /r2 object put moonlight-vplus-flatpak-repo\/releases\/v6\.4\.2\/repo\/objects\/3f\/d0a78b827282178cfca471447815b81676587b6ea9a3df2344621941b23193\.filez/,
+      /r2 object put moonlight-vplus-flatpak-repo\/repo\/objects\/3f\/d0a78b827282178cfca471447815b81676587b6ea9a3df2344621941b23193\.filez/,
     );
     assert.match(log, /--remote/);
   } finally {

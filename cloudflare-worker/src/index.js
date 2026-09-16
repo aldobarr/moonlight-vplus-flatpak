@@ -3,7 +3,6 @@ const GITHUB_RELEASE_BASE =
 const DOWNLOAD_PATH =
   /^\/download\/([0-9A-Za-z][0-9A-Za-z._+-]*)\/([0-9A-Za-z][0-9A-Za-z._+-]*)$/;
 const REPOSITORY_PATH = /^\/repo\/(.+)$/;
-const REPOSITORY_PREFIX = /^releases\/[0-9A-Za-z][0-9A-Za-z._+-]*$/;
 
 function releaseDownload(pathname) {
   let decodedPath;
@@ -32,7 +31,7 @@ function plainText(body, status, headers = {}) {
   });
 }
 
-function repositoryObject(pathname, prefix) {
+function repositoryObject(pathname) {
   let decodedPath;
   try {
     decodedPath = decodeURIComponent(pathname);
@@ -41,7 +40,7 @@ function repositoryObject(pathname, prefix) {
   }
 
   const match = REPOSITORY_PATH.exec(decodedPath);
-  if (match === null || !REPOSITORY_PREFIX.test(prefix)) {
+  if (match === null) {
     return null;
   }
 
@@ -55,7 +54,7 @@ function repositoryObject(pathname, prefix) {
   }
 
   return {
-    key: `${prefix}/repo/${relativePath}`,
+    key: `repo/${relativePath}`,
     relativePath,
   };
 }
@@ -67,7 +66,7 @@ function repositoryCacheControl(relativePath) {
 }
 
 async function repositoryResponse(request, env, pathname) {
-  const repository = repositoryObject(pathname, env.REPOSITORY_PREFIX);
+  const repository = repositoryObject(pathname);
   if (repository === null) {
     return plainText("Not Found\n", 404);
   }

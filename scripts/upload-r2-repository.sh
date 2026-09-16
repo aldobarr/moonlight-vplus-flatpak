@@ -2,15 +2,14 @@
 
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 ASSET_DIRECTORY R2_BUCKET_NAME OBJECT_PREFIX WRANGLER" >&2
+if [[ $# -ne 3 ]]; then
+  echo "Usage: $0 ASSET_DIRECTORY R2_BUCKET_NAME WRANGLER" >&2
   exit 2
 fi
 
 asset_directory=$1
 r2_bucket_name=$2
-object_prefix=$3
-wrangler=$4
+wrangler=$3
 
 if [[ ! -d "$asset_directory/repo" ]]; then
   echo "Flatpak repository is missing: $asset_directory/repo" >&2
@@ -18,10 +17,6 @@ if [[ ! -d "$asset_directory/repo" ]]; then
 fi
 if [[ ! "$r2_bucket_name" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then
   echo "Invalid R2 bucket name: $r2_bucket_name" >&2
-  exit 1
-fi
-if [[ ! "$object_prefix" =~ ^releases/[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
-  echo "Invalid R2 object prefix: $object_prefix" >&2
   exit 1
 fi
 if [[ ! -x "$wrangler" ]]; then
@@ -62,7 +57,7 @@ for repository_file in "${repository_files[@]}"; do
   fi
 
   "$wrangler" r2 object put \
-    "$r2_bucket_name/$object_prefix/$relative_path" \
+    "$r2_bucket_name/$relative_path" \
     --file "$repository_file" \
     --content-type "$(content_type "$relative_path")" \
     --cache-control "$(cache_control "$relative_path")" \
@@ -71,4 +66,4 @@ for repository_file in "${repository_files[@]}"; do
   uploaded_count=$((uploaded_count + 1))
 done
 
-echo "Uploaded $uploaded_count Flatpak repository objects to $r2_bucket_name/$object_prefix."
+echo "Uploaded $uploaded_count Flatpak repository objects to $r2_bucket_name."

@@ -233,11 +233,9 @@ if [[ ! "$previous_worker_version" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
   exit 1
 fi
 
-repository_prefix="releases/$release_tag"
 bash scripts/upload-r2-repository.sh \
   "$static_asset_directory" \
   "$R2_BUCKET_NAME" \
-  "$repository_prefix" \
   "$wrangler"
 
 release_metadata=$(jq -cn \
@@ -324,7 +322,6 @@ WRANGLER_OUTPUT_FILE_PATH="$wrangler_output" \
 "$wrangler" versions upload \
     --config "$worker_config" \
     --tag "$release_tag" \
-    --var "REPOSITORY_PREFIX:$repository_prefix" \
     --message "Flatpak repository for $release_tag"
 new_worker_version=$(jq -er \
   'select(.type == "version-upload" and .version == 1) | .version_id' \
