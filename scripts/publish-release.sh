@@ -133,7 +133,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in base64 find gh jq python3 sha256sum stat; do
+for command in base64 find gh jq python3 rclone sha256sum stat; do
   if ! command -v "$command" >/dev/null; then
     echo "Required command is unavailable: $command" >&2
     exit 1
@@ -236,7 +236,7 @@ fi
 bash scripts/upload-r2-repository.sh \
   "$static_asset_directory" \
   "$R2_BUCKET_NAME" \
-  "$wrangler"
+  rclone
 
 release_metadata=$(jq -cn \
   --slurpfile upstream "$upstream_metadata" \

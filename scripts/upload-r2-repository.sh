@@ -3,13 +3,16 @@
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 ASSET_DIRECTORY R2_BUCKET_NAME WRANGLER" >&2
+  echo "Usage: $0 ASSET_DIRECTORY R2_BUCKET_NAME RCLONE" >&2
   exit 2
 fi
 
 asset_directory=$1
 r2_bucket_name=$2
-wrangler=$3
+rclone=$3
+: "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+: "${CLOUDFLARE_R2_ACCESS_KEY_ID:?CLOUDFLARE_R2_ACCESS_KEY_ID is required}"
+: "${CLOUDFLARE_R2_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_SECRET_ACCESS_KEY is required}"
 
 if [[ ! -d "$asset_directory/repo" ]]; then
   echo "Flatpak repository is missing: $asset_directory/repo" >&2
@@ -19,8 +22,8 @@ if [[ ! "$r2_bucket_name" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then
   echo "Invalid R2 bucket name: $r2_bucket_name" >&2
   exit 1
 fi
-if [[ ! -x "$wrangler" ]]; then
-  echo "Wrangler is unavailable: $wrangler" >&2
+if ! command -v "$rclone" >/dev/null; then
+  echo "rclone is unavailable: $rclone" >&2
   exit 1
 fi
 
@@ -30,40 +33,36 @@ if [[ ${#repository_files[@]} -eq 0 ]]; then
   exit 1
 fi
 
-content_type() {
-  case "$1" in
-    repo/*.png) printf 'image/png' ;;
-    *) printf 'application/octet-stream' ;;
-  esac
-}
+export RCLONE_CONFIG_R2_TYPE=s3
+export RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+export RCLONE_CONFIG_R2_ACCESS_KEY_ID="$CLOUDFLARE_R2_ACCESS_KEY_ID"
+export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$CLOUDFLARE_R2_SECRET_ACCESS_KEY"
+export RCLONE_CONFIG_R2_ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+export RCLONE_CONFIG_R2_REGION=auto
+export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
 
-cache_control() {
-  case "$1" in
-    repo/objects/*) printf 'public, max-age=31536000, immutable' ;;
-    *) printf 'no-cache' ;;
-  esac
-}
+rclone_arguments=(
+  --checkers 32
+  --transfers 16
+  --fast-list
+  --retries 5
+  --low-level-retries 20
+  --stats 30s
+  --stats-one-line
+)
+repository_directory="$asset_directory/repo"
 
-uploaded_count=0
-for repository_file in "${repository_files[@]}"; do
-  relative_path=${repository_file#"$asset_directory"/}
-  if [[ ! "$relative_path" =~ ^[0-9A-Za-z._/-]+$ ]]; then
-    echo "Unsupported R2 object path: $relative_path" >&2
-    exit 1
-  fi
-  if [[ "$relative_path" == /* || "$relative_path" == *"/../"* || "$relative_path" == ../* ]]; then
-    echo "Unsafe R2 object path: $relative_path" >&2
-    exit 1
-  fi
+echo "Uploading ${#repository_files[@]} Flatpak repository files to $r2_bucket_name with parallel R2 transfers."
+"$rclone" copy \
+  "$repository_directory/objects" \
+  "r2:$r2_bucket_name/repo/objects" \
+  "${rclone_arguments[@]}" \
+  --header-upload 'Cache-Control: public, max-age=31536000, immutable'
+"$rclone" copy \
+  "$repository_directory" \
+  "r2:$r2_bucket_name/repo" \
+  --exclude 'objects/**' \
+  "${rclone_arguments[@]}" \
+  --header-upload 'Cache-Control: no-cache'
 
-  "$wrangler" r2 object put \
-    "$r2_bucket_name/$relative_path" \
-    --file "$repository_file" \
-    --content-type "$(content_type "$relative_path")" \
-    --cache-control "$(cache_control "$relative_path")" \
-    --force \
-    --remote
-  uploaded_count=$((uploaded_count + 1))
-done
-
-echo "Uploaded $uploaded_count Flatpak repository objects to $r2_bucket_name."
+echo "Uploaded Flatpak repository files to $r2_bucket_name/repo."
