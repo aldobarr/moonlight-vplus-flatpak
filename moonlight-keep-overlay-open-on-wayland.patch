@@ -1,0 +1,43 @@
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index e7bd33e..52b4c61 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -5119,16 +5119,25 @@ void Session::exec()
+         case SDL_WINDOWEVENT:
+             // Early handling of some events
+             switch (event.window.event) {
+-            case SDL_WINDOWEVENT_FOCUS_LOST:
++            case SDL_WINDOWEVENT_FOCUS_LOST: {
+                 if (m_Preferences->muteOnFocusLoss) {
+                     m_AudioMuted = true;
+                 }
+                 m_InputHandler->notifyFocusLost();
+-                // Close overlay menu when main window loses focus
+-                if (m_MenuPanel && m_MenuPanel->isMenuVisible()) {
++                // The Qt overlay is a separate top-level surface. On native Wayland,
++                // mapping it makes SDL report focus loss for the streaming surface.
++                // That focus transition is caused by our own menu, so closing the
++                // menu here would make it dismiss itself as soon as it appears.
++                const bool focusMovedToWaylandOverlay =
++                        m_MenuPanel && m_MenuPanel->isMenuVisible() &&
++                        m_MenuPanel->isInInitialFocusTransition() &&
++                        strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0;
++                if (m_MenuPanel && m_MenuPanel->isMenuVisible() &&
++                        !focusMovedToWaylandOverlay) {
+                     m_MenuPanel->closeMenu();
+                 }
+                 break;
++            }
+             case SDL_WINDOWEVENT_FOCUS_GAINED:
+                 if (m_Preferences->muteOnFocusLoss) {
+                     m_AudioMuted = false;
+diff --git a/app/streaming/video/overlaymenupanel.h b/app/streaming/video/overlaymenupanel.h
+index b81e102..f050c29 100644
+--- a/app/streaming/video/overlaymenupanel.h
++++ b/app/streaming/video/overlaymenupanel.h
+@@ -158,2 +158,5 @@ public:
+     bool isMenuVisible() const { return m_Visible; }
++    bool isInInitialFocusTransition() const {
++        return m_Visible && m_ShowTimer.isValid() && m_ShowTimer.elapsed() < 500;
++    }
+     bool isClosing() const { return m_Closing; }
